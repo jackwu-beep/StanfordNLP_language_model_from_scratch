@@ -15,13 +15,13 @@ class Linear(torch.nn.Module):
         initialization_std = math.sqrt(2.0 / (in_features + out_features))
         self.w = torch.nn.Parameter(
             torch.nn.init.trunc_normal_(
-                torch.empty(out_features, in_features, dtype=dtype),
+                torch.empty(out_features, in_features, dtype=dtype, device=device),
                 mean=0,
                 std=initialization_std,
                 a=-3 * initialization_std,
                 b=3 * initialization_std,
-            )
-        ).to(device)
+            ),
+        )
 
     def forward(
         self, x: Float[torch.Tensor, " ... in_features"]

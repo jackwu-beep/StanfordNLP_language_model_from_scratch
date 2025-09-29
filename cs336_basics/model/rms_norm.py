@@ -14,7 +14,7 @@ class RmsNorm(torch.nn.Module):
 
         self.eps = eps
         self.d_model = d_model
-        self.gain = torch.nn.Parameter(torch.ones(d_model, dtype=dtype)).to(device)
+        self.gain = torch.nn.Parameter(torch.ones(d_model, dtype=dtype, device=device))
 
     def forward(
         self, x: Float[torch.Tensor, " batch seq d_model"]

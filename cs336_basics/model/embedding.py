@@ -15,13 +15,13 @@ class Embedding(torch.nn.Module):
         initialization_std = math.sqrt(1.0)
         self.embeddings = torch.nn.Parameter(
             torch.nn.init.trunc_normal_(
-                torch.empty(num_embeddings, embedding_dim, dtype=dtype),
+                torch.empty(num_embeddings, embedding_dim, dtype=dtype, device=device),
                 mean=0,
                 std=initialization_std,
                 a=-3,
                 b=3,
             )
-        ).to(device)
+        )
 
     def forward(
         self, token_ids: Int64[torch.Tensor, " ... embedding_index"]

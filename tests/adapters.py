@@ -11,6 +11,8 @@ from torch import Tensor
 
 from cs336_basics.model.embedding import Embedding
 from cs336_basics.model.rms_norm import RmsNorm
+from cs336_basics.model.rope import RotaryPositionalEmbedding
+from cs336_basics.model.swiglu import Swiglu
 from cs336_basics.tokenizer import Tokenizer
 from cs336_basics.model.linear import Linear
 
@@ -92,7 +94,15 @@ def run_swiglu(
     # swiglu.w1.weight.data = w1_weight
     # swiglu.w2.weight.data = w2_weight
     # swiglu.w3.weight.data = w3_weight
-    raise NotImplementedError
+    swiglu = Swiglu(d_model, d_ff)
+    swiglu.load_state_dict(
+        {
+            "w1": w1_weight,
+            "w2": w2_weight,
+            "w3": w3_weight,
+        }
+    )
+    return swiglu.forward(in_features)
 
 
 def run_scaled_dot_product_attention(
@@ -209,7 +219,8 @@ def run_rope(
     Returns:
         Float[Tensor, " ... sequence_length d_k"]: Tensor with RoPEd input.
     """
-    raise NotImplementedError
+    rope = RotaryPositionalEmbedding(theta, d_k, max_seq_len)
+    return rope.forward(in_query_or_key, token_positions)
 
 
 def run_transformer_block(
