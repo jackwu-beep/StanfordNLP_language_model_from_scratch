@@ -9,6 +9,7 @@ import numpy.typing as npt
 import torch
 from torch import Tensor
 
+from cs336_basics.model import misc
 from cs336_basics.model.embedding import Embedding
 from cs336_basics.model.rms_norm import RmsNorm
 from cs336_basics.model.rope import RotaryPositionalEmbedding
@@ -453,7 +454,7 @@ def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, "
         Float[Tensor, "..."]: Tensor of with the same shape as `in_features` with the output of
         softmax normalizing the specified `dim`.
     """
-    raise NotImplementedError
+    return misc.softmax(in_features, dim)
 
 
 def run_cross_entropy(
