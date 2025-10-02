@@ -11,6 +11,7 @@ from torch import Tensor
 
 from cs336_basics.model import misc
 from cs336_basics.model.embedding import Embedding
+from cs336_basics.model.multi_head_self_attn import MultiHeadSelfAttention
 from cs336_basics.model.rms_norm import RmsNorm
 from cs336_basics.model.rope import RotaryPositionalEmbedding
 from cs336_basics.model.swiglu import Swiglu
@@ -158,7 +159,16 @@ def run_multihead_self_attention(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    mh_attn = MultiHeadSelfAttention(d_model, num_heads)
+    mh_attn.load_state_dict(
+        {
+            "q_proj_weight.w": q_proj_weight,
+            "k_proj_weight.w": k_proj_weight,
+            "v_proj_weight.w": v_proj_weight,
+            "o_proj_weight.w": o_proj_weight,
+        }
+    )
+    return mh_attn.forward(in_features)
 
 
 def run_multihead_self_attention_with_rope(
@@ -185,7 +195,6 @@ def run_multihead_self_attention_with_rope(
     Args:
         d_model (int): Dimensionality of the feedforward input and output.
         num_heads (int): Number of heads to use in multi-headed attention.
-        max_seq_len (int): Maximum sequence length to pre-cache if your implementation does that.
         theta (float): RoPE parameter.
         q_proj_weight (Float[Tensor, "d_k d_in"]): Weights for the Q projection
         k_proj_weight (Float[Tensor, "d_k d_in"]): Weights for the K projection
