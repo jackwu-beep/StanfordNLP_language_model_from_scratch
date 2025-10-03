@@ -35,7 +35,7 @@ class RotaryPositionalEmbedding(torch.nn.Module):
         self,
         x: Float[torch.Tensor, " ... seq d_k"],
         token_positions: Int[torch.Tensor, " ... seq"],
-    ) -> torch.Tensor:
+    ) -> Float[torch.Tensor, " ... seq d_k"]:
         """
         Run RoPE for a given input tensor.
 
@@ -47,6 +47,6 @@ class RotaryPositionalEmbedding(torch.nn.Module):
         """
         x_flipped = x.reshape(*x.shape[:-1], -1, 2)[..., [1, 0]].flatten(-2)
         x_flipped[..., 0::2] *= -1
-        cos = torch.index_select(self.rotation_cos, 0, token_positions)
-        sin = torch.index_select(self.rotation_sin, 0, token_positions)
+        cos = self.rotation_cos[token_positions]
+        sin = self.rotation_sin[token_positions]
         return x * cos + x_flipped * sin

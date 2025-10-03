@@ -11,10 +11,11 @@ from torch import Tensor
 
 from cs336_basics.model import misc
 from cs336_basics.model.embedding import Embedding
-from cs336_basics.model.multi_head_self_attn import MultiHeadSelfAttention
+from cs336_basics.model.multi_head_self_attn import MultiHeadSelfAttention, RopeConfig
 from cs336_basics.model.rms_norm import RmsNorm
 from cs336_basics.model.rope import RotaryPositionalEmbedding
-from cs336_basics.model.swiglu import Swiglu
+from cs336_basics.model.swiglu_ffn import SwigluFFN
+from cs336_basics.model.transformer_block import TransformerBlock
 from cs336_basics.tokenizer import Tokenizer
 from cs336_basics.model.linear import Linear
 
@@ -39,7 +40,7 @@ def run_linear(
     """
 
     linear = Linear(d_in, d_out)
-    linear.load_state_dict(dict(w=weights))
+    linear.load_state_dict(dict(weight=weights))
     return linear.forward(in_features)
 
 
@@ -96,12 +97,12 @@ def run_swiglu(
     # swiglu.w1.weight.data = w1_weight
     # swiglu.w2.weight.data = w2_weight
     # swiglu.w3.weight.data = w3_weight
-    swiglu = Swiglu(d_model, d_ff)
+    swiglu = SwigluFFN(d_model, d_ff)
     swiglu.load_state_dict(
         {
-            "w1": w1_weight,
-            "w2": w2_weight,
-            "w3": w3_weight,
+            "w1.weight": w1_weight,
+            "w2.weight": w2_weight,
+            "w3.weight": w3_weight,
         }
     )
     return swiglu.forward(in_features)
@@ -162,10 +163,10 @@ def run_multihead_self_attention(
     mh_attn = MultiHeadSelfAttention(d_model, num_heads)
     mh_attn.load_state_dict(
         {
-            "q_proj_weight.w": q_proj_weight,
-            "k_proj_weight.w": k_proj_weight,
-            "v_proj_weight.w": v_proj_weight,
-            "o_proj_weight.w": o_proj_weight,
+            "q_proj.weight": q_proj_weight,
+            "k_proj.weight": k_proj_weight,
+            "v_proj.weight": v_proj_weight,
+            "output_proj.weight": o_proj_weight,
         }
     )
     return mh_attn.forward(in_features)
@@ -207,7 +208,16 @@ def run_multihead_self_attention_with_rope(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    mh_attn = MultiHeadSelfAttention(d_model, num_heads, rope_config=RopeConfig(theta, max_seq_len))
+    mh_attn.load_state_dict(
+        {
+            "q_proj.weight": q_proj_weight,
+            "k_proj.weight": k_proj_weight,
+            "v_proj.weight": v_proj_weight,
+            "output_proj.weight": o_proj_weight,
+        }
+    )
+    return mh_attn.forward(in_features, token_positions=token_positions)
 
 
 def run_rope(
@@ -303,7 +313,9 @@ def run_transformer_block(
         Float[Tensor, "batch sequence_length d_model"] Tensor with the output of
         running the Transformer block on the input features while using RoPE.
     """
-    raise NotImplementedError
+    block = TransformerBlock(d_model, num_heads, d_ff, max_seq_len, theta)
+    block.load_state_dict(weights)
+    return block.forward(in_features)
 
 
 def run_transformer_lm(
@@ -409,7 +421,7 @@ def run_rmsnorm(
         RMSNorm of the `in_features`.
     """
     rmsnorm = RmsNorm(d_model, eps)
-    rmsnorm.load_state_dict(dict(gain=weights))
+    rmsnorm.load_state_dict(dict(weight=weights))
     return rmsnorm.forward(in_features)
 
 

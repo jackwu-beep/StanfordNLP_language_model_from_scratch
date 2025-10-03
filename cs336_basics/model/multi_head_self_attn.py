@@ -1,10 +1,18 @@
+from dataclasses import dataclass
 import torch
-from jaxtyping import Float
+from jaxtyping import Float, Int
 
 from cs336_basics.model.linear import Linear
 from cs336_basics.model.misc import scaled_dot_product_attention
+from cs336_basics.model.rope import RotaryPositionalEmbedding
 
 # TODO: As a stretch goal, try combining the key, query, and value projections into a single weight matrix so you only need a single matrix multiply.
+
+
+@dataclass
+class RopeConfig:
+    theta: float
+    max_seq_len: int
 
 
 class MultiHeadSelfAttention(torch.nn.Module):
@@ -34,6 +42,7 @@ class MultiHeadSelfAttention(torch.nn.Module):
         self,
         d_model: int,
         num_heads: int,
+        rope_config: RopeConfig | None = None,
         device: torch.device | None = None,
         dtype: torch.dtype | None = None,
     ):
@@ -43,13 +52,22 @@ class MultiHeadSelfAttention(torch.nn.Module):
         self.d_model = d_model
         self.num_heads = num_heads
         d_v = self.d_k
-        self.q_proj_weight = Linear(self.d_k * num_heads, d_model, device, dtype)
-        self.k_proj_weight = Linear(self.d_k * num_heads, d_model, device, dtype)
-        self.v_proj_weight = Linear(d_model, d_v * num_heads, device, dtype)
-        self.o_proj_weight = Linear(d_model, d_v * num_heads, device, dtype)
+        self.q_proj = Linear(self.d_k * num_heads, d_model, device, dtype)
+        self.k_proj = Linear(self.d_k * num_heads, d_model, device, dtype)
+        self.v_proj = Linear(d_model, d_v * num_heads, device, dtype)
+        self.output_proj = Linear(d_model, d_v * num_heads, device, dtype)
+
+        # rope
+        self._rope: RotaryPositionalEmbedding | None = None
+        if rope_config:
+            self._rope = RotaryPositionalEmbedding(
+                rope_config.theta, self.d_k, max_seq_len=rope_config.max_seq_len, device=device
+            )
 
     def forward(
-        self, x: Float[torch.Tensor, " ... sequence_length in_features"]
+        self,
+        x: Float[torch.Tensor, " ... sequence_length in_features"],
+        token_positions: Int[torch.Tensor, " ... sequence_length"] | None = None,
     ) -> Float[torch.Tensor, " ... sequence_length features_out"]:
         attention_heads = []
 
@@ -58,9 +76,9 @@ class MultiHeadSelfAttention(torch.nn.Module):
         mask = torch.triu(torch.ones((seq_len, seq_len), dtype=torch.bool), diagonal=0).T
 
         # project q, k, v
-        q_proj = self.q_proj_weight.forward(x)
-        k_proj = self.k_proj_weight.forward(x)
-        v_proj = self.v_proj_weight.forward(x)
+        q_proj = self.q_proj.forward(x)
+        k_proj = self.k_proj.forward(x)
+        v_proj = self.v_proj.forward(x)
 
         # dot product for each head
         for q, k, v in zip(
@@ -68,7 +86,10 @@ class MultiHeadSelfAttention(torch.nn.Module):
             k_proj.split(self.d_k, -1),
             v_proj.split(self.d_k, -1),
         ):
+            if token_positions is not None and self._rope is not None:
+                q = self._rope.forward(q, token_positions)
+                k = self._rope.forward(k, token_positions)
             attention_heads.append(scaled_dot_product_attention(q, k, v, mask=mask))
 
         # concatenate and project
-        return self.o_proj_weight.forward(torch.cat(attention_heads, dim=-1))
+        return self.output_proj.forward(torch.cat(attention_heads, dim=-1))
