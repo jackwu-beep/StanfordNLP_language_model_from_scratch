@@ -15,6 +15,7 @@ from cs336_basics.model.multi_head_self_attn import MultiHeadSelfAttention, Rope
 from cs336_basics.model.rms_norm import RmsNorm
 from cs336_basics.model.rope import RotaryPositionalEmbedding
 from cs336_basics.model.swiglu_ffn import SwigluFFN
+from cs336_basics.model.transformer import Transformer
 from cs336_basics.model.transformer_block import TransformerBlock
 from cs336_basics.tokenizer import Tokenizer
 from cs336_basics.model.linear import Linear
@@ -64,7 +65,7 @@ def run_embedding(
     """
 
     embedding = Embedding(vocab_size, d_model)
-    embedding.load_state_dict(dict(embeddings=weights))
+    embedding.load_state_dict(dict(weight=weights))
     return embedding.forward(token_ids)
 
 
@@ -397,7 +398,9 @@ def run_transformer_lm(
         Float[Tensor, "batch_size sequence_length vocab_size"]: Tensor with the predicted unnormalized
         next-word distribution for each token.
     """
-    raise NotImplementedError
+    t = Transformer(vocab_size, context_length, num_layers, d_model, num_heads, d_ff, rope_theta)
+    t.load_state_dict(weights)
+    return t.forward(in_indices)
 
 
 def run_rmsnorm(

@@ -13,7 +13,7 @@ class Embedding(torch.nn.Module):
     ):
         super().__init__()
         initialization_std = math.sqrt(1.0)
-        self.embeddings = torch.nn.Parameter(
+        self.weight = torch.nn.Parameter(
             torch.nn.init.trunc_normal_(
                 torch.empty(num_embeddings, embedding_dim, dtype=dtype, device=device),
                 mean=0,
@@ -27,7 +27,7 @@ class Embedding(torch.nn.Module):
         self, token_ids: Int64[torch.Tensor, " ... embedding_index"]
     ) -> Float[torch.Tensor, " ... embedding"]:
         return torch.index_select(
-            self.embeddings,
+            self.weight,
             0,
             token_ids.flatten(),
         ).unflatten(dim=0, sizes=token_ids.shape)
