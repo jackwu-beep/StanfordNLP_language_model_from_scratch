@@ -2,64 +2,91 @@ import os
 import multiprocessing as mp
 from collections import defaultdict, Counter
 from typing import List, Tuple, BinaryIO
-
-# 第三方库
-import regex
 import re
+import regex
 from tqdm import tqdm
 
-
-
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+PAT_RE = None
+_SPLIT_RE = None
+_SPLIT_TOKENS = None
 
 
-def find_chunk_boundaries(
-    file: BinaryIO, 
-    desired_num_chunks: int, 
-    split_special_token: bytes
-) -> list[int]:
-    """
-    Chunk the file into parts that can be counted independently.
-    May return fewer chunks if the boundaries end up overlapping.
-    """
-    assert isinstance(split_special_token, bytes), (
-        "Must represent special token as a bytestring"
-    )
+import mmap
+def find_chunk_boundaries(file_path: str, num_chunks: int, split_special_token: bytes) -> list[int]:
+    with open(file_path, "rb") as file:
+        file.seek(0, os.SEEK_END)
+        file_size = file.tell()
+        file.seek(0)
 
-    # Get total file size in bytes
-    file.seek(0, os.SEEK_END)
-    file_size = file.tell()
-    file.seek(0)
+        chunk_size = max(1, file_size // num_chunks)
+        boundaries = [0]
+        with mmap.mmap(file.fileno(), length=0, access=mmap.ACCESS_READ) as mm:
+            for i in range(1, num_chunks):
+                pos = i * chunk_size
+                if pos >= file_size:
+                    break
+                # 往后找最近的 special token
+                found = mm.find(split_special_token, pos)
+                boundaries.append(found if found != -1 else file_size)
+            boundaries.append(file_size)
+        # 去重（已递增，无需排序）
+        uniq = [boundaries[0]]
+        for b in boundaries[1:]:
+            if b != uniq[-1]:
+                uniq.append(b)
+    return uniq
 
-    chunk_size = file_size // desired_num_chunks
 
-    # Initial guesses for chunk boundary locations, uniformly spaced
-    # Chunks start on previous index, don't include last index
-    chunk_boundaries = [i * chunk_size for i in range(desired_num_chunks + 1)]
-    chunk_boundaries[-1] = file_size
+def worker_init(pat: str, special_tokens: list[str]):
+    global _PAT_RE, _SPLIT_TOKENS, _SPLIT_RE
+    _PAT_RE = regex.compile(pat, flags=regex.UNICODE)
+    _SPLIT_TOKENS = special_tokens or []
+    if len(_SPLIT_TOKENS) > 1:
+        _SPLIT_RE = re.compile("|".join(re.escape(t) for t in _SPLIT_TOKENS))
+    else:
+        _SPLIT_RE = None
 
-    mini_chunk_size = 4096  # Read ahead by 4k bytes at a time
 
-    for bi in range(1, len(chunk_boundaries) - 1):
-        initial_position = chunk_boundaries[bi]
-        file.seek(initial_position)  # Start at boundary guess
-        while True:
-            mini_chunk = file.read(mini_chunk_size)  # Read a mini chunk
+def split_special_tokens(text: str) -> Counter:
+    """Split text by special tokens, remove empty strings"""
+    if not _SPLIT_TOKENS:
+        parts = [text]
+    elif len(_SPLIT_TOKENS) == 1:
+        parts = text.split(_SPLIT_TOKENS[0])
+    else:
+        parts = [seg for seg in _SPLIT_RE.split(text) if seg]
 
-            # If EOF, this boundary should be at the end of the file
-            if mini_chunk == b"":
-                chunk_boundaries[bi] = file_size
-                break
+    c = Counter()
+    update = c.update
+    findall = _PAT_RE.findall
+    for part in parts:
+        update(findall(part))
+    return c
 
-            # Find the special token in the mini chunk
-            found_at = mini_chunk.find(split_special_token)
-            if found_at != -1:
-                chunk_boundaries[bi] = initial_position + found_at
-                break
-            initial_position += mini_chunk_size
 
-    # Make sure all boundaries are unique, but might be fewer than desired_num_chunks
-    return sorted(set(chunk_boundaries))
+def word_to_bytes(word_freqs: dict[str, int]):
+    bytes_seq = []
+    freqs = []
+
+    bytes_seq_append = bytes_seq.append
+    freqs_append = freqs.append
+    for word, freq in word_freqs.items():
+        bytes_seq_append(tuple(word.encode('utf-8')))
+        freqs_append(freq)
+    
+    return bytes_seq, freqs
+
+
+def process_sub_text(args) -> Counter:
+    """Worker function for multiprocessing"""
+    file_path, start, end = args
+    word_freqs = Counter()
+    with open(file_path, "rb") as f:
+        f.seek(start)
+        text = f.read(end - start).replace(b'\r', b'').decode('utf-8')
+        word_freqs = split_special_tokens(text)
+    return word_freqs
 
 
 class BPE:
@@ -72,90 +99,61 @@ class BPE:
     def _init_bpe(self, special_tokens: List[str] = None):
         for i in range(256):
             byte_token = bytes([i])
-            if byte_token not in self.bytes_to_id:  # Avoid duplicating special token bytes
-                self.vocab[self.next_id] = byte_token
-                self.bytes_to_id[byte_token] = self.next_id
-                self.next_id += 1
-
-        self.special_tokens = special_tokens or ["<|endoftext|>"]
-        for token in self.special_tokens:
-            byte_token = token.encode('utf-8')
             self.vocab[self.next_id] = byte_token
             self.bytes_to_id[byte_token] = self.next_id
             self.next_id += 1
+                
+        self.special_tokens = special_tokens or ["<|endoftext|>"]
+        for token in self.special_tokens:
+            if token not in self.bytes_to_id:
+                byte_token = token.encode('utf-8')
+                self.vocab[self.next_id] = byte_token
+                self.bytes_to_id[byte_token] = self.next_id
+                self.next_id += 1
+            
 
-        self._special_token_pattern = re.compile("|".join(re.escape(t) for t in self.special_tokens))
-
-    def _process_part(self, part: str) -> Counter:
-        """Process a string segment into Counter of id tuples"""
-        part_word_freqs = Counter()
-        temp_counts = {}
-
-        for match in regex.finditer(PAT, part, flags=regex.UNICODE):
-            pretoken = match.group()               # 获取匹配字符串
-            id_tuple = tuple(b for b in pretoken.encode('utf-8'))  # 转成 bytes tuple
-            temp_counts[id_tuple] = temp_counts.get(id_tuple, 0) + 1
-        part_word_freqs.update(temp_counts)
-        return part_word_freqs
-    
-    def _split_special_tokens(self, text: str) -> list[str]:
-        """Split text by special tokens, remove empty strings"""
-        if not self.special_tokens:
-            list_text = [text]
-        else:
-            list_text = [seg for seg in re.split(self._special_token_pattern, text) if seg]
-
-        word_freqs = Counter()
-        for part in list_text:
-            word_freqs.update(self._process_part(part))
-        return word_freqs
-    
-    def _process_sub_text(self, args) -> Counter:
-        """Worker function for multiprocessing"""
-        file_path, start, end = args
-        word_freqs = Counter()
-        with open(file_path, "rb") as f:
-            f.seek(start)
-            text = f.read(end - start).replace(b'\r', b'').decode('utf-8')
-            word_freqs = self._split_special_tokens(text)
-        return word_freqs
-
-    def _pre_tokenization(self, file_path: str) -> Counter:
+    def _pre_tokenization(self, file_path: str, special_tokens: list[str]) -> Counter:
         """Main pre-tokenization entry"""
         word_freqs = Counter()
         size_bytes = os.path.getsize(file_path)
         # Small file: read entirely
-        if size_bytes < 1024 * 100:
+        if size_bytes < 1024 * 1024:
             with open(file_path, "rb") as f:
                 chunk = f.read().replace(b'\r', b'').decode('utf-8')
-                word_freqs = self._split_special_tokens(chunk)
+                worker_init(PAT, special_tokens)
+                word_freqs = split_special_tokens(chunk)
         else:
             # Large file: split by boundaries, parallel processing
             num_process = mp.cpu_count() - 1
-            with open(file_path, "rb") as f:
-                boundaries = find_chunk_boundaries(f, num_process, "<|endoftext|>".encode("utf-8"))
+            
+            boundaries = find_chunk_boundaries(file_path, 4*num_process, "<|endoftext|>".encode("utf-8"))
             boundaries_pairs = list(zip(boundaries[:-1], boundaries[1:]))
+
             args_iterable = ((file_path, start, end) for start, end in boundaries_pairs)
             num_workers = max(1, num_process)
-            with mp.Pool(num_workers) as pool:
-                for token_counts in pool.imap_unordered(self._process_sub_text, args_iterable):
-                    word_freqs.update(token_counts)
+            with mp.Pool(
+                num_workers,
+                initializer=worker_init,
+                initargs=(PAT, special_tokens)  # 把模式与特殊 token 传给子进程做一次初始化
+            ) as pool:
+                for word_counts in pool.imap_unordered(process_sub_text, args_iterable, chunksize=1):
+                    word_freqs.update(word_counts)
 
-        words = []
-        freqs = []
-        for seq, freq in word_freqs.items():
-            words.append(list(seq))
-            freqs.append(freq)
+        bytes_seq, freqs = word_to_bytes(word_freqs)
+        from array import array
+        bytes_seq = [array('H', seq) for seq in bytes_seq]
 
-        return words, freqs
+        return bytes_seq, freqs
+    
 
     def _init_count_pairs(self, words: list[list[int]], freqs: list[int]) -> Counter:
         pair_counts = Counter()
-
-        for word, freq in zip(words, freqs):
-            for pair in zip(word, word[1:]):
-                pair_counts[pair] += freq
-
+        self.pair_to_idxs = defaultdict(set)
+        for i, (w, f) in enumerate(zip(words, freqs)):
+            for a, b in zip(w, w[1:]):
+                p = (a, b)
+                pair_counts[p] += f
+                self.pair_to_idxs[p].add(i)
         return pair_counts
     
     def _get_most_frequent_pair(self, pair_counts):
@@ -170,54 +168,57 @@ class BPE:
         return max_pair
 
      
-    def _merge_pair(self, words: list[list[int]], freqs: list[int], pair_counts, pair: Tuple[int, int], merge_id: int):
-        """Merge a specific pair in a word"""
-        old_pairs = defaultdict(int)
-        new_pairs = defaultdict(int)
-
-        pair_counts.pop(pair, None)
+    def _merge_pair(self, words, freqs, pair_counts, pair, merge_id):
+        old_pairs = defaultdict(int); new_pairs = defaultdict(int)
         p0, p1 = pair
+        pair_counts.pop(pair, None)
 
-        candidate_indices = [i for i, w in enumerate(words) if p0 in w and p1 in w]
-        for index in candidate_indices:
-            word = words[index]
-            freq = freqs[index]
+        idxs = list(self.pair_to_idxs.pop(pair, ()))
+        # changed_pairs = Counter()
 
+        for idx in idxs:
+            word, freq = words[idx], freqs[idx]
+
+            # 从倒排表里移除该词旧 pair
+            for a,b in zip(word, word[1:]):
+                s = self.pair_to_idxs.get((a,b))
+                if s is not None:
+                    s.discard(idx)
+                    if not s: self.pair_to_idxs.pop((a,b), None)
+
+            # 实际合并
             new_word = []
-            new_word_append = new_word.append
-
-            i = 0
-            length = len(word)
-            while i < length:
-                if i < length - 1 and word[i] == p0 and word[i + 1] == p1:
-                    # 左邻居
+            append = new_word.append
+            i = 0; L = len(word)
+            while i < L:
+                if i+1 < L and word[i]==p0 and word[i+1]==p1:
                     if i > 0:
-                        left = word[i - 1]
-                        old_pairs[(left, p0)] += freq
-                        new_pairs[(left, merge_id)] += freq
-                    # 右邻居
-                    if i + 2 < length:
-                        right = word[i + 2]
-                        old_pairs[(p1, right)] += freq
-                        new_pairs[(merge_id, right)] += freq
-
-                    new_word_append(merge_id)
-                    i += 2
+                        left = word[i-1]
+                        old_pairs[(left,p0)] += freq
+                        new_pairs[(left,merge_id)] += freq
+                    if i+2 < L:
+                        right = word[i+2]
+                        old_pairs[(p1,right)] += freq
+                        new_pairs[(merge_id,right)] += freq
+                    append(merge_id); i += 2
                 else:
-                    new_word_append(word[i])
-                    i += 1
-            words[index] = new_word
+                    append(word[i]); i += 1
 
-        for old_pair, old_freq in old_pairs.items():
-            if old_pair in pair_counts:
-                pair_counts[old_pair] -= old_freq
-                if pair_counts[old_pair] <= 0:
-                    del pair_counts[old_pair]
-            # 如果 pair 不存在，则无需操作
+            words[idx] = new_word
+            # 把新词的 pair 放回倒排表
+            for a,b in zip(new_word, new_word[1:]):
+                self.pair_to_idxs[(a,b)].add(idx)
 
-        # 加上 new_pairs
-        for new_pair, new_freq in new_pairs.items():
-            pair_counts[new_pair] = pair_counts.get(new_pair, 0) + new_freq
+        # 更新 pair_counts（先减旧，再加新），并收集 changed_pairs
+        for p,f in old_pairs.items():
+            if p in pair_counts:
+                pair_counts[p] -= f
+                if pair_counts[p] <= 0: del pair_counts[p]
+            # if p in pair_counts: changed_pairs[p] = pair_counts[p]
+
+        for p,f in new_pairs.items():
+            pair_counts[p] = pair_counts.get(p,0)+f
+            # changed_pairs[p] = pair_counts[p]
 
         return words, freqs, pair_counts
         
@@ -225,11 +226,11 @@ class BPE:
     def train(self, input_path, vocab_size, special_tokens):
         self._init_bpe(special_tokens)
 
-        words, freqs = self._pre_tokenization(input_path)
+        words, freqs = self._pre_tokenization(input_path, special_tokens)
         
         pair_counts = self._init_count_pairs(words, freqs)
         
-        # pbar = tqdm(total=vocab_size, desc="Training BPE", unit="new token")
+        # pbar = tqdm(total=vocab_size - self.next_id, desc="Training BPE", unit="new token")
         while self.next_id < vocab_size:
             if not pair_counts:
                 break
@@ -273,4 +274,4 @@ if __name__ == "__main__":
     profiler.disable()
     stats = pstats.Stats(profiler)
     stats.sort_stats("tottime")  # 按函数自身耗时排序
-    stats.print_stats(20)        # 打印前 20 个耗时函数
+    stats.print_stats(10)
