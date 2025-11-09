@@ -1,0 +1,43 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.12.7, pytest-8.4.1, pluggy-1.6.0
+rootdir: /Users/yangpei/Desktop/side-projects/cs336/cs336-assignment1-basics
+configfile: pyproject.toml
+plugins: jaxtyping-0.3.2
+collected 14 items / 13 deselected / 1 selected
+
+tests/test_tokenizer.py::test_unicode_string_with_special_tokens_matches_tiktoken vocab size: 50257
+number of 7 after splits with ['<|endoftext|>']
+[39, 2634, 297, 127, 110, 289, 27083, 86, 220, 50256, 50256, 389, 6184, 120, 30, 12520, 247, 225, 50256]
+[39, 2634, 297, 127, 110, 289, 27083, 86, 220, 50257, 50257, 389, 6184, 120, 30, 12520, 247, 225, 50257]
+FAILED
+
+=================================== FAILURES ===================================
+___________ test_unicode_string_with_special_tokens_matches_tiktoken ___________
+
+    def test_unicode_string_with_special_tokens_matches_tiktoken():
+        reference_tokenizer = tiktoken.get_encoding("gpt2")
+        tokenizer = get_tokenizer_from_vocab_merges_path(
+            vocab_path=VOCAB_PATH, merges_path=MERGES_PATH, special_tokens=["<|endoftext|>"]
+        )
+        test_string = "Héllò hôw <|endoftext|><|endoftext|> are ü? 🙃<|endoftext|>"
+    
+        reference_ids = reference_tokenizer.encode(test_string, allowed_special={"<|endoftext|>"})
+        ids = tokenizer.encode(test_string)
+        print(reference_ids)
+        print(ids)
+>       assert ids == reference_ids
+E       AssertionError: assert [39, 2634, 29...110, 289, ...] == [39, 2634, 29...110, 289, ...]
+E         
+E         At index 9 diff: 50257 != 50256
+E         
+E         Full diff:
+E           [
+E               39,
+E               2634,...
+E         
+E         ...Full output truncated (27 lines hidden), use '-vv' to show
+
+tests/test_tokenizer.py:244: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_tokenizer.py::test_unicode_string_with_special_tokens_matches_tiktoken
+======================= 1 failed, 13 deselected in 0.17s =======================
