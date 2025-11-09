@@ -1,5 +1,6 @@
 from itertools import chain
-from typing import Iterable
+import os
+from typing import BinaryIO, Iterable
 import regex as re
 
 from cs336_basics.constants import PAT
@@ -13,17 +14,20 @@ class Tokenizer:
         merges: list[tuple[bytes, bytes]], 
         special_tokens: list[str] | None = None
     ):
-        print(f"vocab size: {len(vocab)}")
         self.vocab = vocab
         self.merges = merges
         self.special_tokens = special_tokens or []
         # sort the special tokens by length to match to the longest first
         self.special_tokens = sorted(self.special_tokens, key=len, reverse=True)
+        self.reverse_vocab = {
+            v: k for k, v in self.vocab.items()
+        }
 
-        # add special tokens into
+        # add special tokens into vocab
         for special_token in self.special_tokens:
-            self.vocab[len(self.vocab)] = special_token.encode("utf-8")
-        
+            if special_token.encode("utf-8") not in self.reverse_vocab:
+                self.vocab[len(self.vocab)] = special_token.encode("utf-8")
+
         self.reverse_vocab = {
             v: k for k, v in self.vocab.items()
         }
@@ -66,12 +70,14 @@ class Tokenizer:
         """
         if not text:
             return []
-        # first split based on special tokens to avoid incorrectly merges
-        escaped_special_tokens = [re.escape(token) for token in self.special_tokens]
-        # add `()` to also return the pattern matching group for easier handle of special tokens
-        docs = re.split("(" + "|".join(escaped_special_tokens) + ")", text)
+        if self.special_tokens:
+            # first split based on special tokens to avoid incorrectly merges
+            escaped_special_tokens = [re.escape(token) for token in self.special_tokens]
+            # add `()` to also return the pattern matching group for easier handle of special tokens
+            docs = re.split("(" + "|".join(escaped_special_tokens) + ")", text)
+        else:
+            docs = [text]
 
-        print(f"number of {len(docs)} after splits with {self.special_tokens}")
         token_ids = []
         for doc in docs:
             # special token could also be in the splits
@@ -92,7 +98,14 @@ class Tokenizer:
         return result
 
     def encode_iterable(self, iterable: Iterable[str]) -> Iterable[int]:
-        pass
+        """
+            The core idea is to chunk the words from the iterable and then encode
+            when receive sufficient number of words
+        """
+        for i in iterable:
+            result = self.encode(i)
+            for id in result:
+                yield id
 
     def decode(self, ids: list[int]) -> str:
         bpe = bytes([])
