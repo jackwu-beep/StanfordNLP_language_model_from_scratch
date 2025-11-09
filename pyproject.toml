@@ -19,6 +19,9 @@ dependencies = [
     "tqdm>=4.67.1",
     "wandb>=0.19.7",
     "ty>=0.0.1a16",
+    "sortedcontainers>=2.4.0",
+    "ipykernel>=7.1.0",
+    "pyinstrument>=5.1.1",
 ]
 
 [build-system]
