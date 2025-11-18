@@ -23,5 +23,5 @@ class SwigluFFN(torch.nn.Module):
     def forward(
         self, x: Float[torch.Tensor, " batch seq d_model"]
     ) -> Float[torch.Tensor, " ... batch seq d_model"]:
-        inner = self.w1.forward(x)
-        return self.w2.forward(inner * torch.sigmoid(inner) * (self.w3.forward(x)))
+        inner = self.w1(x)
+        return self.w2(inner * torch.sigmoid(inner) * (self.w3(x)))

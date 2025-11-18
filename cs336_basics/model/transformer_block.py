@@ -34,10 +34,10 @@ class TransformerBlock(torch.nn.Module):
         batches, seq_len = x.shape[0], x.shape[1]
 
         # generate token positions per batch
-        token_positions = torch.arange(1, seq_len + 1).repeat(batches, 1)
+        token_positions = torch.arange(0, seq_len).repeat(batches, 1)
 
         # multi-head attention with pre-norm
-        y = x + self.attn.forward(self.ln1(x), token_positions)
+        y = x + self.attn(self.ln1(x), token_positions)
 
         # feed-forward with pre-norm
-        return y + self.ffn.forward(self.ln2(y))
+        return y + self.ffn(self.ln2(y))

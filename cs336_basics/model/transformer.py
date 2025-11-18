@@ -22,6 +22,7 @@ class Transformer(torch.nn.Module):
     ) -> None:
         super().__init__()
 
+        self.context_length = context_length
         self.token_embeddings = Embedding(vocab_size, d_model, device=device, dtype=dtype)
         self.layers = torch.nn.ModuleList(
             TransformerBlock(
@@ -42,9 +43,9 @@ class Transformer(torch.nn.Module):
         Float[Tensor, "batch_size sequence_length vocab_size"]: Tensor with the predicted unnormalized
         next-word distribution for each token.
         """
-        y = self.token_embeddings.forward(x)
+        y = self.token_embeddings(x)
         for layer in self.layers:
-            y = layer.forward(y)
-        y = self.ln_final.forward(y)
-        y = self.lm_head.forward(y)
+            y = layer(y)
+        y = self.ln_final(y)
+        y = self.lm_head(y)
         return y

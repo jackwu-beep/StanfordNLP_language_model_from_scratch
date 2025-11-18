@@ -56,6 +56,7 @@ class MultiHeadSelfAttention(torch.nn.Module):
         self.k_proj = Linear(self.d_k * num_heads, d_model, device, dtype)
         self.v_proj = Linear(d_model, d_v * num_heads, device, dtype)
         self.output_proj = Linear(d_model, d_v * num_heads, device, dtype)
+        self.device = device
 
         # rope
         self._rope: RotaryPositionalEmbedding | None = None
@@ -73,12 +74,14 @@ class MultiHeadSelfAttention(torch.nn.Module):
 
         # causal mask
         seq_len = x.shape[-2]
-        mask = torch.triu(torch.ones((seq_len, seq_len), dtype=torch.bool), diagonal=0).T
+        mask = torch.triu(
+            torch.ones((seq_len, seq_len), dtype=torch.bool, device=self.device), diagonal=0
+        ).T
 
         # project q, k, v
-        q_proj = self.q_proj.forward(x)
-        k_proj = self.k_proj.forward(x)
-        v_proj = self.v_proj.forward(x)
+        q_proj = self.q_proj(x)
+        k_proj = self.k_proj(x)
+        v_proj = self.v_proj(x)
 
         # dot product for each head
         for q, k, v in zip(
@@ -87,9 +90,9 @@ class MultiHeadSelfAttention(torch.nn.Module):
             v_proj.split(self.d_k, -1),
         ):
             if token_positions is not None and self._rope is not None:
-                q = self._rope.forward(q, token_positions)
-                k = self._rope.forward(k, token_positions)
+                q = self._rope(q, token_positions)
+                k = self._rope(k, token_positions)
             attention_heads.append(scaled_dot_product_attention(q, k, v, mask=mask))
 
         # concatenate and project
-        return self.output_proj.forward(torch.cat(attention_heads, dim=-1))
+        return self.output_proj(torch.cat(attention_heads, dim=-1))

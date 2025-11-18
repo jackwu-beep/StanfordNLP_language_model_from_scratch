@@ -6,8 +6,11 @@ import pstats
 import sys
 import time
 import logging
+import yaml
 
 from cs336_basics.tokenizer import run_train_bpe, save_tokenizer, load_tokenizer, Tokenizer
+from cs336_basics.train import training_loop
+from cs336_basics.config import instantiate
 
 
 def with_timing(handler_func):
@@ -89,6 +92,14 @@ def main() -> int:
     )
     cmd_tokenize.add_argument("--chunks", type=int, default=1000, help="Number of chunks to split the dataset into")
 
+    # Train model subcommand
+    cmd_train = subparsers.add_parser("train", help="Train a model using a config file")
+    cmd_train.add_argument("config_file", help="Path to YAML config file")
+    cmd_train.add_argument("--entity", default="yurigorokhov-personal", help="WandB entity (team name)")
+    cmd_train.add_argument("--project", default="transformer-assignment-1", help="WandB project name")
+    cmd_train.add_argument("--offline", action="store_true", help="Run WandB in offline mode")
+    cmd_train.add_argument("--disable-wandb", action="store_true", help="Disable WandB logging entirely")
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -101,6 +112,8 @@ def main() -> int:
             base_handler = handle_train_tokenizer
         elif args.command == "tokenize-dataset":
             base_handler = handle_tokenize_dataset
+        elif args.command == "train":
+            base_handler = handle_train
         else:
             base_handler = None
 
@@ -113,6 +126,7 @@ def main() -> int:
         handlers = {
             "train-tokenizer": handler if args.command == "train-tokenizer" else None,
             "tokenize-dataset": handler if args.command == "tokenize-dataset" else None,
+            "train": handler if args.command == "train" else None,
         }
 
         handler = handlers.get(args.command)
@@ -157,6 +171,29 @@ def handle_tokenize_dataset(args) -> int:
     tokenizer = Tokenizer(vocab, merges, special_tokens)
     tokenizer.tokenize_dataset_to_array_record(args.input, args.output, args.chunks)
     print(f"Tokenized dataset saved to {args.output}")
+    return 0
+
+
+def handle_train(args) -> int:
+    import wandb
+
+    # Load config
+    with open(args.config_file) as file:
+        config = yaml.safe_load(file)
+
+    # Initialize wandb
+    wandb_mode = "disabled" if args.disable_wandb else ("offline" if args.offline else "online")
+    run = wandb.init(
+        entity=args.entity,
+        project=args.project,
+        config=config,
+        mode=wandb_mode,
+    )
+
+    # Run training
+    training_loop(**instantiate(config), run=run)
+
+    print("Training completed!")
     return 0
 
 

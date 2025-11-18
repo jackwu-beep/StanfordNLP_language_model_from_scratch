@@ -13,7 +13,9 @@ from collections.abc import Iterable, Iterator
 from array_record.python.array_record_module import ArrayRecordWriter
 
 
-PRETOKENIZER_PATTERN = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+PRETOKENIZER_PATTERN = (
+    r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+)
 DEFAULT_PARALLELISM = multiprocessing.cpu_count()
 
 
@@ -65,7 +67,9 @@ def run_train_bpe(
 
     # pre-tokenize file
     logging.info("starting pre-tokenizing")
-    pre_token_counts = _pre_tokenize_from_file(input_path, special_token_bytes, num_chunks=pretokenizer_num_chunks)
+    pre_token_counts = _pre_tokenize_from_file(
+        input_path, special_token_bytes, num_chunks=pretokenizer_num_chunks
+    )
     logging.info(f"finished pre-tokenizing, {len(pre_token_counts)} pre-tokens found.")
 
     byte_pair_counter: Counter[tuple[bytes, bytes]] = Counter()
@@ -98,7 +102,9 @@ def run_train_bpe(
         merges.append(most_common)
 
         # merge pre-tokens
-        pre_token_replacements = _merge_pretokens(pre_token_counts, most_common, joined_pair, byte_pair_counter)
+        pre_token_replacements = _merge_pretokens(
+            pre_token_counts, most_common, joined_pair, byte_pair_counter
+        )
 
         # replace pre-tokens that have updates
         for replace, replace_with in pre_token_replacements:
@@ -111,7 +117,9 @@ def run_train_bpe(
     return vocab, merges
 
 
-def save_tokenizer(file_path: os.PathLike, vocab: dict[int, bytes], merges: list[tuple[bytes, bytes]]):
+def save_tokenizer(
+    file_path: os.PathLike, vocab: dict[int, bytes], merges: list[tuple[bytes, bytes]]
+):
     d = msgpack.packb(
         {
             "vocab": {k: v for k, v in vocab.items()},
@@ -174,7 +182,9 @@ def _merge_pretokens(
                 updated_pre_token: list[bytes] = []
                 prev_token_merged = False
                 for left, right in itertools.pairwise(pre_token):
-                    if not prev_token_merged and (left == merge_pair_left and right == merge_pair_right):
+                    if not prev_token_merged and (
+                        left == merge_pair_left and right == merge_pair_right
+                    ):
                         updated_pre_token.append(replace_with)
                         prev_token_merged = True
                     else:
@@ -200,7 +210,9 @@ def _pre_tokenize_from_file_byte_range(
         raw_text = f.read(end - start).decode("utf-8", errors="ignore")
 
         # pre-tokenize while splitting on special tokens so that we don't accidentally go accross them with the regex
-        special_token_regex = "|".join([re.escape(s.decode("utf-8"), special_only=True) for s in split_special_tokens])
+        special_token_regex = "|".join(
+            [re.escape(s.decode("utf-8"), special_only=True) for s in split_special_tokens]
+        )
         for paragraph in re.splititer(special_token_regex, raw_text):
             for m in re.finditer(PRETOKENIZER_PATTERN, paragraph):
                 pre_token: tuple[bytes] = tuple(x.to_bytes() for x in m.group(0).encode("utf-8"))  # type: ignore
@@ -226,7 +238,11 @@ def _pre_tokenize_from_file(
     pre_token_counts: Counter[tuple[bytes]] = Counter()
     with multiprocessing.Pool(parallelism) as pool:
         for result in pool.map(
-            functools.partial(_pre_tokenize_from_file_byte_range, file_path, split_special_tokens=split_special_tokens),
+            functools.partial(
+                _pre_tokenize_from_file_byte_range,
+                file_path,
+                split_special_tokens=split_special_tokens,
+            ),
             zip(boundaries[:-1], boundaries[1:]),
         ):
             pre_token_counts += result
@@ -292,11 +308,22 @@ def dataset_filename(prefix: str, shard_index: int, n_shards: int, extension="ar
 
 
 class Tokenizer:
-    def __init__(self, vocab: dict[int, bytes], merges: list[tuple[bytes, bytes]], special_tokens: list[str] | None):
+    def __init__(
+        self,
+        vocab: dict[int, bytes],
+        merges: list[tuple[bytes, bytes]],
+        special_tokens: list[str] | None,
+    ):
         self.vocab = vocab
         self.merges = [tuple(m) for m in merges]
-        self.special_tokens = sorted(special_tokens, key=len, reverse=True) if special_tokens else None
-        self._vocab_reverse_lookup: dict[bytes, int] = {v: k for k, v in vocab.items()}
+        self.special_tokens = (
+            sorted(special_tokens, key=len, reverse=True) if special_tokens else None
+        )
+        self.vocab_reverse_lookup: dict[bytes, int] = {v: k for k, v in vocab.items()}
+
+    @property
+    def vocab_size(self) -> int:
+        return len(self.vocab)
 
     @classmethod
     def from_file(cls, tokenizer_snapshot: os.PathLike, special_tokens: list[str] | None = None):
@@ -308,7 +335,7 @@ class Tokenizer:
 
     def _encode_special_token(self, token: str) -> int:
         key = token.encode("utf-8", errors="replace")
-        return self._vocab_reverse_lookup[key]
+        return self.vocab_reverse_lookup[key]
 
     def _encode_regular_text(self, text: str) -> Iterator[int]:
         for m in re.finditer(PRETOKENIZER_PATTERN, text):
@@ -337,11 +364,13 @@ class Tokenizer:
                 pre_token = updated_pre_token
 
             for elem in pre_token:
-                yield self._vocab_reverse_lookup[elem]
+                yield self.vocab_reverse_lookup[elem]
 
     def encode_iterable(self, iterable: Iterable[str]) -> Iterator[int]:
         special_token_regex = (
-            "|".join([re.escape(s, special_only=True) for s in self.special_tokens]) if self.special_tokens else None
+            "|".join([re.escape(s, special_only=True) for s in self.special_tokens])
+            if self.special_tokens
+            else None
         )
         for data in iterable:
             if special_token_regex:
@@ -369,7 +398,10 @@ class Tokenizer:
         return b"".join([self.vocab[i] for i in ids]).decode("utf-8", errors="replace")
 
     def tokenize_dataset_to_array_record(
-        self, dataset_path: os.PathLike, output_directory: os.PathLike, chunks: int = DEFAULT_PARALLELISM
+        self,
+        dataset_path: os.PathLike,
+        output_directory: os.PathLike,
+        chunks: int = DEFAULT_PARALLELISM,
     ):
         output_directory = Path(output_directory)
         output_directory.mkdir(parents=True, exist_ok=True)
@@ -394,7 +426,9 @@ class Tokenizer:
             ]
             pool.starmap(self._encode_file_byte_range, args_list)
 
-    def _encode_file_byte_range(self, file_path: str | os.PathLike, output_file: Path, boundary: tuple[int, int]):
+    def _encode_file_byte_range(
+        self, file_path: str | os.PathLike, output_file: Path, boundary: tuple[int, int]
+    ):
         logging.info(f"Tokenizing {output_file}")
         start, end = boundary
         with open(file_path, "rb") as f:

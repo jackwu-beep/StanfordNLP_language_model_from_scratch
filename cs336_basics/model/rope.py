@@ -47,6 +47,7 @@ class RotaryPositionalEmbedding(torch.nn.Module):
         """
         x_flipped = x.reshape(*x.shape[:-1], -1, 2)[..., [1, 0]].flatten(-2)
         x_flipped[..., 0::2] *= -1
+
         cos = self.rotation_cos[token_positions]
         sin = self.rotation_sin[token_positions]
         return x * cos + x_flipped * sin
