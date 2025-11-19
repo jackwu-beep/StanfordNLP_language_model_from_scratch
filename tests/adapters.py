@@ -12,10 +12,10 @@ from torch import Tensor
 from cs336_basics.model import misc
 from cs336_basics.model.checkpointing import load_checkpoint, save_checkpoint
 from cs336_basics.model.embedding import Embedding
-from cs336_basics.model.learning_rate_schedule import cosine_schedule
+from cs336_basics.learning_rate_schedule import cosine_schedule
 from cs336_basics.model.loss import cross_entropy_loss
 from cs336_basics.model.multi_head_self_attn import MultiHeadSelfAttention, RopeConfig
-from cs336_basics.model.optimizer import AdamW
+from cs336_basics.optimizer import AdamW
 from cs336_basics.model.rms_norm import RmsNorm
 from cs336_basics.model.rope import RotaryPositionalEmbedding
 from cs336_basics.model.swiglu_ffn import SwigluFFN
