@@ -396,7 +396,7 @@ def run_silu(in_features: Float[Tensor, " ..."]) -> Float[Tensor, " ..."]:
 
 
 def run_get_batch(
-    dataset: npt.NDArray, batch_size: int, context_length: int, device: str
+        dataset: npt.NDArray, batch_size: int, context_length: int, device: str
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Given a dataset (a 1D numpy array of integers) and a desired batch size and
@@ -435,7 +435,7 @@ def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, "
 
 
 def run_cross_entropy(
-    inputs: Float[Tensor, " batch_size vocab_size"], targets: Int[Tensor, " batch_size"]
+        inputs: Float[Tensor, " batch_size vocab_size"], targets: Int[Tensor, " batch_size"]
 ) -> Float[Tensor, ""]:
     """Given a tensor of inputs and targets, compute the average cross-entropy
     loss across examples.
@@ -589,4 +589,66 @@ def run_train_bpe(
                 representing that <token1> was merged with <token2>.
                 Merges are ordered by order of creation.
     """
-    raise NotImplementedError
+
+
+    vocab: dict[int, bytes] = {i: bytes([i]) for i in range(256)}
+    merges: list[tuple[int, int]] = []
+    for i in range(len(special_tokens)):
+        vocab[len(vocab)] = special_tokens[i].encode('utf-8')
+
+    # chunk by special_tokens
+    import regex as re
+    special_tokens_escaped = [re.escape(t) for t in special_tokens]
+    split = '|'.join(special_tokens_escaped)
+    with open(input_path, encoding='utf-8') as f:
+        lines = re.split(split, f.read())
+
+    # regex-based pre-tokenizer used by GPT-2
+    from collections import defaultdict
+    pre_tokenizer_pat = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+    pre_tokens_and_counts: dict[bytes, tuple[int, list[int]]] = {}
+    for line in lines:
+        for t in re.finditer(pre_tokenizer_pat, line):
+            token = t.group().encode('utf-8')
+            if token not in pre_tokens_and_counts:
+                pre_tokens_and_counts[token] = (1, list(token))
+            else:
+                c, l = pre_tokens_and_counts[token]
+                pre_tokens_and_counts[token] = (c + 1, l)
+    #print(pre_tokens_and_counts)
+
+    while len(vocab) < vocab_size:
+        # find the most popular bi-gram
+        counts: dict[tuple[int, int], int] = defaultdict(int)
+        for pre_token, (c, token_list) in pre_tokens_and_counts.items():
+            for i in range(1, len(token_list)):
+                counts[(token_list[i-1], token_list[i])] += c
+        new_v = max(counts, key=lambda k: (counts[k], vocab[k[0]], vocab[k[1]]))
+        #new_v = max(counts, key=counts.get)
+        new_v_inx = len(vocab)
+        vocab[new_v_inx] = vocab[new_v[0]] + vocab[new_v[1]]
+        #print(new_v_inx, new_v, vocab[new_v[0]].encode("utf-8"), vocab[new_v[1]].encode("utf-8"), counts[new_v])
+        merges.append(new_v)
+        # merge with the new vocab
+        for pre_token, (c, token_list) in pre_tokens_and_counts.items():
+            i = 0
+            new_token_list: list[int] = []
+            while i < len(token_list):
+                if token_list[i] == new_v[0] and i + 1 < len(token_list) and token_list[i + 1] == new_v[1]:
+                    new_token_list.append(new_v_inx)
+                    i += 2
+                else:
+                    new_token_list.append(token_list[i])
+                    i += 1
+            pre_tokens_and_counts[pre_token] = (c, new_token_list)
+        #if len(vocab) >= vocab_size:
+            #print(counts)
+
+    return vocab, [(vocab[a], vocab[b]) for a, b in merges]
+
+
+# local debug
+if __name__ == "__main__":
+    vocab, merges = run_train_bpe('README.md', 300, ["<|endoftext|>"])
+    print(vocab)
+    print(merges)
