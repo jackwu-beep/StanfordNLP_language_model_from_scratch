@@ -1,3 +1,4 @@
+import hashlib
 import grain.python as grain
 import glob
 
@@ -6,30 +7,46 @@ import torch
 
 
 class ToTrainingExamples(grain.experimental.FlatMapTransform):
-    max_fan_out = 1_000_000
+    max_fan_out = 10_000
 
-    def __init__(self, context_length):
+    def __init__(self, context_length: int, samples_per_document: int | None):
         self.context_length = context_length
+        self.samples_per_document = samples_per_document
 
     def flat_map(self, elem):
         tokens = np.frombuffer(elem, dtype=np.uint16)
-        for i in range(0, len(tokens) - self.context_length, self.context_length):
+
+        # valid_ranges
+        valid_ranges = []
+        for i in range(0, len(tokens) - self.context_length):
 
             # adjust starting positions based on last token so that we always have context_length tokens
             last_target = max(i + self.context_length + 1, len(tokens))
             first_target = last_target - self.context_length
             last_input = last_target - 1
             first_input = first_target - 1
+            valid_ranges.append((first_input, last_input, first_target, last_target))
 
-            inputs = tokens[first_input : last_input]
-            targets = tokens[first_target : last_target]
+         # Example: randomly shuffle or sample
+        indices = np.arange(len(valid_ranges))
+        if self.samples_per_document is not None:
+            hash_obj = hashlib.sha256(elem)
+            seed = int.from_bytes(hash_obj.digest()[:4], 'little')
+            rng = np.random.default_rng(seed)
+            rng.shuffle(indices)
+            indices = indices[:self.samples_per_document]
 
-            yield (inputs, targets)
+        for idx in indices:
+            a, b, c, d = valid_ranges[idx]
+            yield (tokens[a:b], tokens[c:d])
 
 
-def get_data_loader_lazy(dataset_path, sequence_length: int = 1024, batch_size: int = 1, num_epochs: int = 1, seed: int = 43):
+def get_data_loader_lazy(dataset_path, sequence_length: int = 1024, samples_per_file: int = 1000, batch_size: int = 1, num_epochs: int = 1, seed: int = 43):
+
+    source = grain.ArrayRecordDataSource(glob.glob(dataset_path))
+
     index_sampler = grain.IndexSampler(
-        num_records=1,
+        num_records=len(source),
         num_epochs=num_epochs,
         shuffle=True,
         seed=seed,
@@ -37,9 +54,9 @@ def get_data_loader_lazy(dataset_path, sequence_length: int = 1024, batch_size: 
 
     def _get_data_loader():
         return grain.DataLoader(
-            data_source=grain.ArrayRecordDataSource(glob.glob(dataset_path)),
+            data_source=source,
             operations=[
-                ToTrainingExamples(sequence_length),
+                ToTrainingExamples(sequence_length, samples_per_file),
                 grain.Batch(batch_size=batch_size, drop_remainder=True),
             ],
             sampler=index_sampler,

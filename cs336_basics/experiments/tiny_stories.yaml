@@ -1,5 +1,5 @@
-gradient_clip_max_l2_norm: null
-iterations: 2500
+gradient_clip_max_l2_norm: 1.0
+iterations: 5000
 checkpoint_dir: ./scratch/checkpoints/tiny_stories_10k/
 checkpoint_interval: 500
 
@@ -42,14 +42,16 @@ data_loader:
   __target__: cs336_basics.dataloader.get_data_loader_lazy
   dataset_path: "./scratch/datasets/TinyStories-train-10k/*.arrayrecord"
   sequence_length: $$model.context_length
+  samples_per_file: 2048
   batch_size: 32
-  num_epochs: 23
+  num_epochs: 1
   seed: 43
 
 validation_data_loader:
   __target__: cs336_basics.dataloader.get_data_loader_lazy
   dataset_path: "./scratch/datasets/TinyStories-valid-10k/*.arrayrecord"
   sequence_length: $$model.context_length
+  samples_per_file: 2048
   batch_size: 32
   num_epochs: 1
   seed: 43

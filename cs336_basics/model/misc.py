@@ -55,3 +55,4 @@ def gradient_clipping(
         for param in parameters:
             if param.grad is not None:
                 param.grad.data *= clip_coef
+    return gradient_norm
