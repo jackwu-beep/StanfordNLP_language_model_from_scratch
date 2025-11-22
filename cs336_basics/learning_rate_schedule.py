@@ -1,4 +1,7 @@
+from dataclasses import dataclass
 import math
+
+import torch
 
 
 def cosine_schedule(
@@ -34,3 +37,17 @@ def cosine_schedule(
         ) * (max_learning_rate - min_learning_rate)
     else:
         return min_learning_rate
+
+
+@dataclass
+class CosineLearningRate:
+    max_learning_rate: float
+    min_learning_rate: float
+    warmup_iters: int
+    cosine_cycle_iters: int
+
+    def update_lr(self, iteration: int, optimizer: torch.optim.Optimizer) -> float:
+        lr = cosine_schedule(iteration, self.max_learning_rate, self.min_learning_rate, self.warmup_iters, self.cosine_cycle_iters)
+        for group in optimizer.param_groups:
+            group['lr'] = lr
+        return lr

@@ -32,8 +32,8 @@ def scaled_dot_product_attention(
 
 
 def gradient_clipping(
-    parameters: Iterable[torch.nn.Parameter], max_l2_norm: float, eps: float = 1e-6
-) -> None:
+    parameters: Iterable[torch.nn.Parameter], max_l2_norm: float | None, eps: float = 1e-6
+):
     """Given a set of parameters, clip their combined gradients to have l2 norm at most max_l2_norm.
 
     Args:
@@ -47,8 +47,12 @@ def gradient_clipping(
         if param.grad is None:
             continue
         total_norm_squared += torch.pow(param.grad.data, 2).sum()
-    clip_coef = max_l2_norm / (torch.sqrt(total_norm_squared) + eps)
+    gradient_norm = torch.sqrt(total_norm_squared)
+    if max_l2_norm is None:
+        return gradient_norm
+    clip_coef = max_l2_norm / (gradient_norm + eps)
     if clip_coef < 1:
         for param in parameters:
             if param.grad is not None:
                 param.grad.data *= clip_coef
+    return gradient_norm

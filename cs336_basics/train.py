@@ -1,7 +1,9 @@
 import glob
+import math
 import os
 from pathlib import Path
 import torch
+from tqdm import tqdm
 from cs336_basics.model.checkpointing import load_checkpoint, save_checkpoint
 from cs336_basics.model.loss import cross_entropy_loss
 from cs336_basics.model.misc import gradient_clipping
@@ -12,14 +14,20 @@ def training_loop(
     model,
     optimizer,
     data_loader,
+    validation_data_loader,
     iterations,
     gradient_clip_max_l2_norm: float | None,
     checkpoint_dir,
     checkpoint_interval,
+    learning_rate_schedule,
     run,
 ):
     device = next(model.parameters()).device
-    data_iterator = iter(data_loader)
+    if "mps" in str(device):
+        model = torch.compile(model, backend="aot_eager")
+    else:
+        model = torch.compile(model)
+    data_iterator = iter(data_loader())
 
     # start from last checkpoint
     iteration = 0
@@ -35,25 +43,33 @@ def training_loop(
             next(data_iterator)
         print(f"Done skipping {iteration} batches...")
 
+    training_bar = tqdm(total=iterations, desc="train")
+    training_bar.update(iteration)
+
+    model.train()
     while iteration < iterations:
-        print(f"iter={iteration}")
+
+        lr = learning_rate_schedule.update_lr(iteration, optimizer)
+
         optimizer.zero_grad()
 
         # load batch
-        inputs, targets = next(data_iterator)
+        try:
+            inputs, targets = next(data_iterator)
+        except StopIteration:
+            raise Exception(f"out of data at iteration {iteration}!")
         inputs = torch.from_numpy(inputs).to(torch.int32).to(device=device)
 
         # step
         outputs = model(inputs)
         loss = cross_entropy_loss(outputs, targets)
         loss.backward()
-        run.log({"loss": loss.item()})
-        if gradient_clip_max_l2_norm is not None:
-            gradient_clipping(model.parameters(), max_l2_norm=gradient_clip_max_l2_norm)
+        gradient_norm = gradient_clipping(model.parameters(), max_l2_norm=gradient_clip_max_l2_norm)
+
         optimizer.step()
 
-        # checkpoint
-        if iteration % checkpoint_interval == 0:
+        # checkpointing and metrics reporting
+        if iteration != 0 and (iteration % checkpoint_interval == 0 or iteration == iterations - 1):
             save_checkpoint(
                 model,
                 optimizer,
@@ -61,14 +77,49 @@ def training_loop(
                 os.path.join(checkpoint_dir, f"checkpoint_{iteration:06d}"),
             )
 
-        iteration += 1
+            # calculate validation loss
+            model.eval()
+            val_loss, val_loss_per_token = _get_validation_loss(model, validation_data_loader, device)
+            model.train()
 
-    # checkpoint last
-    save_checkpoint(
-        model,
-        optimizer,
-        iteration,
-        os.path.join(checkpoint_dir, f"checkpoint_{iteration:06d}"),
-    )
+            run.log({
+                "train/loss": loss.item(),
+                "val/loss": val_loss,
+                "val/loss_per_token": val_loss_per_token,
+                "val/perplexity": math.exp(val_loss),
+                "val/perplexity_per_token": math.exp(val_loss_per_token),
+                "learning_rate": lr,
+                "grad_norm": gradient_norm.item()
+            }, step=iteration)
+
+        # report training losses more frequently
+        elif iteration != 0 and iteration % 100 == 0:
+            run.log({
+                "train/loss": loss.item(),
+                "learning_rate": lr,
+                "grad_norm": gradient_norm.item()
+            }, step=iteration)
+
+
+        iteration += 1
+        training_bar.update(1)
+    training_bar.close()
 
     run.finish()
+
+
+def _get_validation_loss(model, data_loader, device) -> float:
+    seq_count = 0
+    token_count = 0
+    val_loss = 0.0
+    validation_data = data_loader()
+    with torch.no_grad():
+        for batch in tqdm(validation_data, desc="validation"):
+            inputs, targets = batch
+            inputs = torch.from_numpy(inputs).to(torch.int32).to(device=device)
+            logits = model(inputs)
+            loss = cross_entropy_loss(logits, targets)
+            val_loss += loss.item()
+            seq_count += inputs.size(0)
+            token_count += (inputs.size(0) * inputs.size(1))
+    return val_loss / seq_count, val_loss / token_count
