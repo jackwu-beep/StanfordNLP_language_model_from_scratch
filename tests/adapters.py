@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import defaultdict, Counter
+from multiprocessing import Pool, cpu_count
 import os
 from collections.abc import Iterable
 from typing import IO, Any, BinaryIO
@@ -625,25 +626,42 @@ def run_train_bpe(
             word = m.group(0)
             pre_tokens_cnt[to_bytes_tuple(word)] += 1
 
-    # step 3: bpe merges
+    # step 3: bpe merges with multiprocessing 
     merges = []
-    while len(vocab) < vocab_size:
-        pair_cnt = defaultdict(int)
-        for token, cnt in pre_tokens_cnt.items():
+    def count_pairs_for_tokens(tokens_with_count):
+        pair_cnt = Counter()
+        for token, cnt in tokens_with_count.items():
             for i in range(len(token) - 1):
                 pair = (token[i], token[i + 1])
                 pair_cnt[pair] += cnt
-        # find most frequent pair
+        return pair_cnt
+
+    while len(vocab) < vocab_size:
+        items = list(pre_tokens_cnt.items())
+        # Split items into chunks for multiprocessing
+        chunk_size = max(1, len(items) // cpu_count())
+        chunks = [items[i:i+chunk_size] for i in range(0, len(items), chunk_size)]
+
+        with Pool(cpu_count()) as pool:
+            counters = pool.map(count_pairs_for_tokens, chunks)
+        # combine all counts
+        pair_cnt = Counter()
+        for counter in counters:
+            pair_cnt.update(counter)
         if not pair_cnt:
             break
+
+        # find most frequent pair
         max_cnt = max(pair_cnt.values())
         candidates = [k for k, v in pair_cnt.items() if v == max_cnt]
         most_frequent_pair = max(candidates)
+
         # create new token 
         a, b = most_frequent_pair
         new_token = a + b
         vocab[next_i] = new_token
         next_i += 1
+        
         # apply new_token change to pre-tokenization sequence
         changes = []
         for token, cnt in pre_tokens_cnt.items():
