@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import defaultdict
 import os
 from typing import IO, Any, BinaryIO
 from collections.abc import Iterable
@@ -9,6 +10,11 @@ import numpy.typing as npt
 import torch
 from torch import Tensor
 
+import numpy as np
+import regex as re
+import time
+
+PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
 
 def run_linear(
     d_in: int,
@@ -589,4 +595,72 @@ def run_train_bpe(
                 representing that <token1> was merged with <token2>.
                 Merges are ordered by order of creation.
     """
-    raise NotImplementedError
+
+    # step 1: initialize volcaburary with special tokens <|endoftext|> and the 256 byte values
+    vocab: dict[int, bytes] = {i: bytes([i]) for i in range(256)}
+    next_i = 256
+
+    special_token_bytes = [token.encode('utf-8') for token in special_tokens]
+    for token_bytes in special_token_bytes:
+        if token_bytes not in vocab.values():
+            vocab[next_i] = token_bytes
+            next_i += 1
+
+    # step 2: pre-tokenization
+    # It is convenient to represent this as a dict[tuple[bytes], int], e.g. {(l,o,w): 5 …}. 
+    # Note that even a single byte is a bytes object in Python. 
+    def to_bytes_tuple(word: str) -> tuple[bytes]:
+        lst = list(tuple(word.encode("utf-8")))
+        lst = [bytes([ele]) for ele in lst]
+        return tuple(lst)
+    
+    pre_tokens_cnt = defaultdict(int)
+    with open(input_path, "r", encoding="utf-8") as f:
+        text = f.read()
+    # map() applies that escaping to every token in special_tokens
+    chunks = re.split("|".join(map(re.escape, special_tokens)), text) 
+    # each m is one match of the pattern PAT in the current chunk.
+    for chunk in chunks:
+        for m in re.finditer(PAT, chunk):
+            word = m.group(0)
+            pre_tokens_cnt[to_bytes_tuple(word)] += 1
+
+    # step 3: bpe merges
+    merges = []
+    while len(vocab) < vocab_size:
+        pair_cnt = defaultdict(int)
+        for token, cnt in pre_tokens_cnt.items():
+            for i in range(len(token) - 1):
+                pair = (token[i], token[i + 1])
+                pair_cnt[pair] += cnt
+        # find most frequent pair
+        if not pair_cnt:
+            break
+        max_cnt = max(pair_cnt.values())
+        candidates = [k for k, v in pair_cnt.items() if v == max_cnt]
+        most_frequent_pair = max(candidates)
+        # create new token 
+        a, b = most_frequent_pair
+        new_token = a + b
+        vocab[next_i] = new_token
+        next_i += 1
+        # apply new_token change to pre-tokenization sequence
+        changes = []
+        for token, cnt in pre_tokens_cnt.items():
+            indices = [i for i in range(len(token) - 1) if token[i: i+2] == most_frequent_pair]
+            if indices:
+                new_pre_token = []
+                i = 0
+                while i < len(token):
+                    if i in indices:
+                        new_pre_token.append(new_token)
+                        i += 2
+                    else:
+                        new_pre_token.append(token[i])
+                        i += 1
+                changes.append((token, tuple(new_pre_token), cnt))
+        for old_token, new_pre_token, cnt in changes:
+            pre_tokens_cnt[new_pre_token] += cnt
+            del pre_tokens_cnt[old_token]
+        merges.append((a, b))
+    return vocab, merges
