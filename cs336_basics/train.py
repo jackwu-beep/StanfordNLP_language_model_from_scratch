@@ -47,6 +47,8 @@ def training_loop(
     training_bar.update(iteration)
 
     model.train()
+    ema_loss = None
+    ema_alpha = 0.05
     while iteration < iterations:
 
         lr = learning_rate_schedule.update_lr(iteration, optimizer)
@@ -63,6 +65,13 @@ def training_loop(
         # step
         outputs = model(inputs)
         loss = cross_entropy_loss(outputs, targets)
+
+        # update EMA loss
+        if ema_loss is None:
+            ema_loss = loss.item()
+        else:
+            ema_loss = ema_alpha * loss.item() + (1-ema_alpha) * ema_loss
+
         loss.backward()
         gradient_norm = gradient_clipping(model.parameters(), max_l2_norm=gradient_clip_max_l2_norm)
 
@@ -83,21 +92,21 @@ def training_loop(
             model.train()
 
             run.log({
-                "train/loss": loss.item(),
+                "train/loss": ema_loss,
                 "val/loss": val_loss,
                 "val/loss_per_token": val_loss_per_token,
                 "val/perplexity": math.exp(val_loss),
                 "val/perplexity_per_token": math.exp(val_loss_per_token),
                 "learning_rate": lr,
-                "grad_norm": gradient_norm.item()
+                "grad_norm": gradient_norm
             }, step=iteration)
 
         # report training losses more frequently
         elif iteration != 0 and iteration % 100 == 0:
             run.log({
-                "train/loss": loss.item(),
+                "train/loss": ema_loss,
                 "learning_rate": lr,
-                "grad_norm": gradient_norm.item()
+                "grad_norm": gradient_norm
             }, step=iteration)
 
 
