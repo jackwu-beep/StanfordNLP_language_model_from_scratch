@@ -35,7 +35,7 @@ optimizer:
 learning_rate_schedule:
   __target__: cs336_basics.learning_rate_schedule.CosineLearningRate
   max_learning_rate: 0.005
-  min_learning_rate: 0.0005
+  min_learning_rate_ratio: 0.1
   warmup_iters: 500
   cosine_cycle_iters: $$iterations
 
@@ -52,7 +52,7 @@ validation_data_loader:
   __target__: cs336_basics.dataloader.get_data_loader_lazy
   dataset_path: "./scratch/datasets/TinyStories-valid-10k/*.arrayrecord"
   sequence_length: $$model.context_length
-  samples_per_file: 2048
+  samples_per_file: 1024
   batch_size: 32
   num_epochs: 1
   seed: 43
