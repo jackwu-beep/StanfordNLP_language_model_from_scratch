@@ -568,7 +568,14 @@ def get_tokenizer(
     """
     raise NotImplementedError
 
-
+def count_pairs_for_tokens(tokens_with_count):
+    pair_cnt = Counter()
+    for token, cnt in tokens_with_count:
+        for i in range(len(token) - 1):
+            pair = (token[i], token[i + 1])
+            pair_cnt[pair] += cnt
+    return pair_cnt
+    
 def run_train_bpe(
     input_path: str | os.PathLike,
     vocab_size: int,
@@ -628,13 +635,6 @@ def run_train_bpe(
 
     # step 3: bpe merges with multiprocessing 
     merges = []
-    def count_pairs_for_tokens(tokens_with_count):
-        pair_cnt = Counter()
-        for token, cnt in tokens_with_count.items():
-            for i in range(len(token) - 1):
-                pair = (token[i], token[i + 1])
-                pair_cnt[pair] += cnt
-        return pair_cnt
 
     while len(vocab) < vocab_size:
         items = list(pre_tokens_cnt.items())
