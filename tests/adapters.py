@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from array import array
 from collections import defaultdict, Counter
 from multiprocessing import Pool, cpu_count
 import os
@@ -568,6 +569,19 @@ def get_tokenizer(
     """
     raise NotImplementedError
 
+
+# main run_train_bpe function
+
+def tokenize_and_count(chunk: str) -> Counter:
+    def to_bytes_tuple(word: str) -> tuple:
+        return tuple(word.encode("utf-8"))
+    # each m is one match of the pattern PAT in the current chunk.
+    counter = Counter()
+    for m in re.finditer(PAT, chunk):
+        word = m.group(0)
+        counter[to_bytes_tuple(word)] += 1
+    return counter
+
 def count_pairs_for_tokens(tokens_with_count):
     pair_cnt = Counter()
     for token, cnt in tokens_with_count:
@@ -582,26 +596,14 @@ def run_train_bpe(
     special_tokens: list[str],
     **kwargs,
 ) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
-    """Given the path to an input corpus, run train a BPE tokenizer and
-    output its vocabulary and merges.
-
+    """Given the path to an input corpus, run train a BPE tokenizer and output its vocabulary and merges.
     Args:
         input_path (str | os.PathLike): Path to BPE tokenizer training data.
         vocab_size (int): Total number of items in the tokenizer's vocabulary (including special tokens).
         special_tokens (list[str]): A list of string special tokens to be added to the tokenizer vocabulary.
-            These strings will never be split into multiple tokens, and will always be
-            kept as a single token. If these special tokens occur in the `input_path`,
-            they are treated as any other string.
-
     Returns:
-        tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
-            vocab:
-                The trained tokenizer vocabulary, a mapping from int (token ID in the vocabulary)
-                to bytes (token bytes)
-            merges:
-                BPE merges. Each list item is a tuple of bytes (<token1>, <token2>),
-                representing that <token1> was merged with <token2>.
-                Merges are ordered by order of creation.
+        vocab: The trained tokenizer vocabulary, a mapping from int (token ID in the vocabulary) to bytes (token bytes)
+        merges: each list item is a tuple of bytes (<token1>, <token2>) representing that <token1> was merged with <token2>.
     """
 
     # step 1: initialize volcaburary with special tokens <|endoftext|> and the 256 byte values
@@ -614,71 +616,139 @@ def run_train_bpe(
             vocab[next_i] = token_bytes
             next_i += 1
 
-    # step 2: pre-tokenization
-    # It is convenient to represent this as a dict[tuple[bytes], int], e.g. {(l,o,w): 5 …}. 
-    # Note that even a single byte is a bytes object in Python. 
-    def to_bytes_tuple(word: str) -> tuple[bytes]:
-        lst = list(tuple(word.encode("utf-8")))
-        lst = [bytes([ele]) for ele in lst]
-        return tuple(lst)
-    
-    pre_tokens_cnt = defaultdict(int)
+    # step 2: pre-tokenization with multiprocessing
+    # It is convenient to represent this as a dict[tuple[bytes], int], e.g. {(l,o,w): 5 …}.
     with open(input_path, "r", encoding="utf-8") as f:
         text = f.read()
     # map() applies that escaping to every token in special_tokens
-    chunks = re.split("|".join(map(re.escape, special_tokens)), text) 
-    # each m is one match of the pattern PAT in the current chunk.
-    for chunk in chunks:
-        for m in re.finditer(PAT, chunk):
-            word = m.group(0)
-            pre_tokens_cnt[to_bytes_tuple(word)] += 1
+    # chunks = re.split("|".join(map(re.escape, special_tokens)), text) 
+    split_patterns = "|".join(map(re.escape, special_tokens))
+    chunks = [c for c in re.split(split_patterns, text) if c]
+    pre_tokens_cnt = defaultdict(int)
+    # Use multiprocessing with chunksize
+    with Pool(cpu_count()) as pool:
+        counters = pool.map(tokenize_and_count, chunks, chunksize=max(4096, len(chunks) // (cpu_count() * 4)))
+        for counter in counters:
+            for k, v in counter.items():
+                pre_tokens_cnt[k] += v
 
-    # step 3: bpe merges with multiprocessing 
+    # step 3: bpe merges with optimized data structures (NumPy + array.array)
     merges = []
 
-    while len(vocab) < vocab_size:
-        items = list(pre_tokens_cnt.items())
-        # Split items into chunks for multiprocessing
-        chunk_size = max(1, len(items) // cpu_count())
-        chunks = [items[i:i+chunk_size] for i in range(0, len(items), chunk_size)]
+    # Build initial pair-to-token index for fast lookup
+    # Maps: pair -> {token_id: pair_count_in_token * token_frequency}
+    pair_to_token_ids = defaultdict(lambda: defaultdict(int))
+    token_id_to_token = {}  # token_id -> (numpy array, count)
 
-        with Pool(cpu_count()) as pool:
-            counters = pool.map(count_pairs_for_tokens, chunks)
-        # combine all counts
+    for token_id, (token, cnt) in enumerate(pre_tokens_cnt.items()):
+        # Convert tuple to numpy array for faster operations
+        token_arr = np.array(token, dtype=np.uint32)
+        token_id_to_token[token_id] = (token_arr, cnt)
+
+        # Use NumPy vectorized operations to count pairs
+        if len(token_arr) > 1:
+            # Create pairs using array slicing - much faster than Python loops
+            pairs_left = token_arr[:-1]
+            pairs_right = token_arr[1:]
+
+            # Count unique pairs efficiently
+            for i in range(len(pairs_left)):
+                pair = (int(pairs_left[i]), int(pairs_right[i]))
+                pair_to_token_ids[pair][token_id] += cnt
+
+    while len(vocab) < vocab_size:
+        # Count pairs using the cached counts - much faster!
         pair_cnt = Counter()
-        for counter in counters:
-            pair_cnt.update(counter)
+        for pair, token_counts in pair_to_token_ids.items():
+            pair_cnt[pair] = sum(token_counts.values())
+
         if not pair_cnt:
             break
 
-        # find most frequent pair
-        max_cnt = max(pair_cnt.values())
-        candidates = [k for k, v in pair_cnt.items() if v == max_cnt]
-        most_frequent_pair = max(candidates)
+        # find most frequent pair with tie-breaking
+        # Build pair key cache to avoid repeated vocab lookups
+        pair_keys = {}
+        for pair, count in pair_cnt.items():
+            a, b = pair
+            a_bytes = bytes([a]) if a < 256 else vocab[a]
+            b_bytes = bytes([b]) if b < 256 else vocab[b]
+            pair_keys[pair] = (count, a_bytes, b_bytes)
 
-        # create new token 
+        most_frequent_pair = max(pair_keys.keys(), key=lambda p: pair_keys[p])
+
+        # create new token
         a, b = most_frequent_pair
-        new_token = a + b
+        _, a_bytes, b_bytes = pair_keys[most_frequent_pair]
+        new_token = a_bytes + b_bytes
         vocab[next_i] = new_token
+        new_token_idx = next_i
         next_i += 1
-        
-        # apply new_token change to pre-tokenization sequence
-        changes = []
-        for token, cnt in pre_tokens_cnt.items():
-            indices = [i for i in range(len(token) - 1) if token[i: i+2] == most_frequent_pair]
-            if indices:
-                new_pre_token = []
+
+        # apply merge ONLY to tokens that contain this pair
+        affected_token_ids = list(pair_to_token_ids[most_frequent_pair].keys())
+
+        # Remove the merged pair from the index
+        del pair_to_token_ids[most_frequent_pair]
+
+        for token_id in affected_token_ids:
+            token_arr, cnt = token_id_to_token[token_id]
+
+            # Remove all old pair counts for this token using NumPy slicing
+            if len(token_arr) > 1:
+                pairs_left = token_arr[:-1]
+                pairs_right = token_arr[1:]
+
+                for i in range(len(pairs_left)):
+                    old_pair = (int(pairs_left[i]), int(pairs_right[i]))
+                    if old_pair in pair_to_token_ids and token_id in pair_to_token_ids[old_pair]:
+                        del pair_to_token_ids[old_pair][token_id]
+                        if not pair_to_token_ids[old_pair]:
+                            del pair_to_token_ids[old_pair]
+
+            # Apply merge using NumPy vectorization
+            # Find where pairs (a, b) occur
+            merge_mask = (token_arr[:-1] == a) & (token_arr[1:] == b)
+            merge_indices = np.where(merge_mask)[0]
+
+            if len(merge_indices) > 0:
+                # Build new token efficiently
+                new_pre_token = array('I')  # Use array.array for efficient building
                 i = 0
-                while i < len(token):
-                    if i in indices:
-                        new_pre_token.append(new_token)
+                merge_idx_set = set(merge_indices)
+
+                while i < len(token_arr):
+                    if i in merge_idx_set:
+                        new_pre_token.append(new_token_idx)
                         i += 2
                     else:
-                        new_pre_token.append(token[i])
+                        new_pre_token.append(int(token_arr[i]))
                         i += 1
-                changes.append((token, tuple(new_pre_token), cnt))
-        for old_token, new_pre_token, cnt in changes:
-            pre_tokens_cnt[new_pre_token] += cnt
-            del pre_tokens_cnt[old_token]
-        merges.append((a, b))
+
+                # Convert array.array to numpy array
+                new_token_arr = np.array(new_pre_token, dtype=np.uint32)
+            else:
+                new_token_arr = token_arr
+
+            # Update token mapping
+            token_id_to_token[token_id] = (new_token_arr, cnt)
+
+            # Add new pair counts to index using NumPy
+            if len(new_token_arr) > 1:
+                pairs_left = new_token_arr[:-1]
+                pairs_right = new_token_arr[1:]
+
+                for i in range(len(pairs_left)):
+                    new_pair = (int(pairs_left[i]), int(pairs_right[i]))
+                    pair_to_token_ids[new_pair][token_id] += cnt
+
+        merges.append((a_bytes, b_bytes))
+
+    # Rebuild pre_tokens_cnt from token_id_to_token
+    # Convert NumPy arrays back to tuples for the return value
+    pre_tokens_cnt = defaultdict(int)
+    for token_arr, cnt in token_id_to_token.values():
+        # Convert numpy array to tuple
+        token_tuple = tuple(int(x) for x in token_arr)
+        pre_tokens_cnt[token_tuple] += cnt
+
     return vocab, merges
