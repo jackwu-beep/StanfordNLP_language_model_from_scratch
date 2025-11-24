@@ -1,0 +1,17 @@
+command:
+  - uv
+  - run
+  - cs336
+  - train
+  - cs336_basics/experiments/tiny_stories.yaml
+method: grid
+metric:
+  name: val/perplexity
+  goal: minimize
+parameters:
+  learning_rate_schedule.max_learning_rate:
+    values: [0.0002, 0.0003, 0.0004, 0.0005, 0.0006, 0.0007]
+
+  # this automatically creates a checkpoint dir based on the wandb run_id
+  checkpoint_dir:
+    value: null
