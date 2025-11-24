@@ -2,7 +2,7 @@ import json
 import time
 
 from .adapters import run_train_bpe
-from .common import FIXTURES_PATH, gpt2_bytes_to_unicode
+from .common import FIXTURES_PATH, gpt2_bytes_to_unicode, DATA_PATH
 
 
 def test_train_bpe_speed():
@@ -86,3 +86,44 @@ def test_train_bpe_special_tokens(snapshot):
             "merges": merges,
         },
     )
+
+def test_train_bpe_tinystories():
+    """
+    Ensure that the special tokens are added to the vocabulary and not
+    merged with other tokens.
+    """
+    input_path = DATA_PATH / "TinyStoriesV2-GPT4-train.txt"
+    start_time = time.time()
+    vocab, merges = run_train_bpe(
+        input_path=input_path,
+        vocab_size=10000,
+        special_tokens=["<|endoftext|>"],
+    )
+    end_time = time.time()
+    assert end_time - start_time < 30 * 60
+
+    # Check that the special token is not in the vocab
+    vocabs_without_specials = [word for word in vocab.values() if word != b"<|endoftext|>"]
+    for word_bytes in vocabs_without_specials:
+        assert b"<|" not in word_bytes
+
+
+def test_train_bpe_expts_owt():
+    """
+    Ensure that the special tokens are added to the vocabulary and not
+    merged with other tokens.
+    """
+    input_path = DATA_PATH / "owt_train.txt"
+    start_time = time.time()
+    vocab, merges = run_train_bpe(
+        input_path=input_path,
+        vocab_size=32000,
+        special_tokens=["<|endoftext|>"],
+    )
+    end_time = time.time()
+    assert end_time - start_time < 12 * 60 * 60
+
+    # Check that the special token is not in the vocab
+    vocabs_without_specials = [word for word in vocab.values() if word != b"<|endoftext|>"]
+    for word_bytes in vocabs_without_specials:
+        assert b"<|" not in word_bytes
