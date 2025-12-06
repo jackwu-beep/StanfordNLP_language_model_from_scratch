@@ -139,15 +139,19 @@ def main() -> int:
         "--max-tokens", type=int, default=256, help="Maximum tokens to generate (default: 256)"
     )
     cmd_chat.add_argument(
-        "--temperature", type=float, default=0.2, help="Sampling temperature (default: 0.2)"
+        "--temperature", type=float, default=None, help="Sampling temperature (default: None)"
     )
     cmd_chat.add_argument(
-        "--top-p", type=float, default=0.8, help="Top-p nucleus sampling threshold (default: 0.8)"
+        "--top-p", type=float, default=None, help="Top-p nucleus sampling threshold (default: None)"
     )
 
     # Dataset info subcommand
-    cmd_dataset_info = subparsers.add_parser("dataset-info", help="Show statistics about a tokenized dataset")
-    cmd_dataset_info.add_argument("dataset_path", help="Path to dataset directory containing ArrayRecord files")
+    cmd_dataset_info = subparsers.add_parser(
+        "dataset-info", help="Show statistics about a tokenized dataset"
+    )
+    cmd_dataset_info.add_argument(
+        "dataset_path", help="Path to dataset directory containing ArrayRecord files"
+    )
     cmd_dataset_info.add_argument(
         "--tokenizer", "-t", help="Path to tokenizer file (optional, for document counting)"
     )
