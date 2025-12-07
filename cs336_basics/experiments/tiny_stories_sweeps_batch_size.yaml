@@ -1,0 +1,35 @@
+command:
+  - uv
+  - run
+  - cs336
+  - train
+  - cs336_basics/experiments/tiny_stories_ablation.yaml
+method: grid
+metric:
+  name: val/perplexity
+  goal: minimize
+parameters:
+
+  # this automatically creates a checkpoint dir based on the wandb run_id
+  checkpoint_dir:
+    value: null
+
+  _group:
+    values:
+      - dataloader.batch_size: 8
+        iterations: 48000
+
+      - dataloader.batch_size: 16
+        iterations: 24000
+
+      - dataloader.batch_size: 32
+        iterations: 12000
+
+      - dataloader.batch_size: 64
+        iterations: 6000
+
+      - dataloader.batch_size: 128
+        iterations: 3000
+
+      - dataloader.batch_size: 256
+        iterations: 1500

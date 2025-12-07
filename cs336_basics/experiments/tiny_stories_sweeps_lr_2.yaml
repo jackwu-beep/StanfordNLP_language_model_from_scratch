@@ -3,7 +3,7 @@ command:
   - run
   - cs336
   - train
-  - cs336_basics/experiments/tiny_stories.yaml
+  - cs336_basics/experiments/tiny_stories_ablation.yaml
 method: grid
 metric:
   name: val/perplexity
