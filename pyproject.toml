@@ -19,6 +19,13 @@ dependencies = [
     "tqdm>=4.67.1",
     "wandb>=0.19.7",
     "ty>=0.0.1a16",
+    "jupyter>=1.1.1",
+    "pandas>=2.3.2",
+    "seaborn>=0.13.2",
+    "matplotlib>=3.10.7",
+    "scikit-learn>=1.7.2",
+    "mlxtend>=0.23.4",
+    "xgboost>=3.1.1",
 ]
 
 [build-system]

@@ -1,0 +1,8 @@
+--2025-08-23 00:18:46--  https://huggingface.co/datasets/roneneldan/TinyStories/resolve/main/TinyStoriesV2-GPT4-train.txt
+正在解析主机 huggingface.co (huggingface.co)... 199.16.158.8, 2001::80f2:f0bd
+正在连接 huggingface.co (huggingface.co)|199.16.158.8|:443... 失败：Operation timed out。
+正在连接 huggingface.co (huggingface.co)|2001::80f2:f0bd|:443... 失败：Operation timed out。
+重试中。
+
+--2025-09-25 21:06:44--  (尝试次数： 2)  https://huggingface.co/datasets/roneneldan/TinyStories/resolve/main/TinyStoriesV2-GPT4-train.txt
+正在连接 huggingface.co (huggingface.co)|199.16.158.8|:443... 

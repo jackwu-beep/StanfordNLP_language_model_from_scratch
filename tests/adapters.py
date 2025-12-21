@@ -8,6 +8,8 @@ from jaxtyping import Float, Int
 import numpy.typing as npt
 import torch
 from torch import Tensor
+import regex as re
+from collections import Counter, defaultdict
 
 
 def run_linear(
@@ -589,4 +591,106 @@ def run_train_bpe(
                 representing that <token1> was merged with <token2>.
                 Merges are ordered by order of creation.
     """
-    raise NotImplementedError
+    # 读取文本
+    with open(input_path, 'r', encoding='utf-8') as f:
+        text = f.read()
+    
+    # 初始化 vocab 和 merges
+    vocab = {i: bytes([i]) for i in range(256)}
+    for token in special_tokens:
+        vocab[len(vocab)] = token.encode('utf-8')
+    merges = []
+    
+    # 按 special tokens 切分
+    text_parts = split_by_special_tokens(text, special_tokens)
+
+    # GPT-2 预分词正则
+    PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+    pat = re.compile(PAT)
+
+    # 将语料表示为 token-id 序列(每个预分词后的word对应一个id列表)
+    word_tokens = {}  # word_str -> list[token_id]
+    word_counts = Counter()  # word_str -> 出现次数
+
+    for text_part in text_parts:
+        for match in pat.finditer(text_part):
+            word_str = match.group()
+            word_counts[word_str] += 1
+            if word_str not in word_tokens:
+                # 初始化: 每个字节对应一个token id (0..255)
+                word_tokens[word_str] = list(word_str.encode('utf-8'))
+    
+    # 统计初始 pair 频率 (pair是token-id对)
+    pair_cnt = Counter()
+    for word_str, token_ids in word_tokens.items():
+        count = word_counts[word_str]
+        for i in range(len(token_ids) - 1):
+            pair = (token_ids[i], token_ids[i + 1])
+            pair_cnt[pair] += count
+    
+    # 迭代合并
+    while len(vocab) < vocab_size:
+        if not pair_cnt:
+            break
+        
+        # 选出频率最高的pair；同频时按(bytes_a, bytes_b) tuple字典序选最大的
+        most_common_pair, freq = max(
+            pair_cnt.items(), 
+            key=lambda kv: (kv[1], (vocab[kv[0][0]], vocab[kv[0][1]]))
+        )
+        if freq == 0:
+            break
+        
+        token_a, token_b = most_common_pair
+        new_token_id = len(vocab)
+        vocab[new_token_id] = vocab[token_a] + vocab[token_b]
+        merges.append((vocab[token_a], vocab[token_b]))
+        
+        # 在所有词中替换 (token_a, token_b) -> new_token_id 并更新pair计数
+        for word_str, token_ids in word_tokens.items():
+            count = word_counts[word_str]
+            i = 0
+            new_token_ids = []
+            
+            while i < len(token_ids):
+                # 非重叠贪心匹配
+                if i < len(token_ids) - 1 and token_ids[i] == token_a and token_ids[i + 1] == token_b:
+                    # 找到匹配,更新计数
+                    # 删除旧pair的计数
+                    if i > 0:
+                        old_left_pair = (token_ids[i - 1], token_a)
+                        pair_cnt[old_left_pair] -= count
+                        new_left_pair = (token_ids[i - 1], new_token_id)
+                        pair_cnt[new_left_pair] += count
+                    if i + 2 < len(token_ids):
+                        old_right_pair = (token_b, token_ids[i + 2])
+                        pair_cnt[old_right_pair] -= count
+                        new_right_pair = (new_token_id, token_ids[i + 2])  
+                        pair_cnt[new_right_pair] += count
+                    pair_cnt[most_common_pair] -= count
+                    
+                    # 添加新token到结果
+                    new_token_ids.append(new_token_id)
+                    
+                    
+                    i += 2  # 跳过已合并的两个token
+                else:
+                    new_token_ids.append(token_ids[i])
+                    i += 1
+            
+            word_tokens[word_str] = new_token_ids
+    
+    return vocab, merges
+
+
+def split_by_special_tokens(text: str, special_tokens: list[str]) -> list[str]:
+    """将 text 根据 special_tokens 切分为多个部分"""
+    if not special_tokens:
+        return [text]
+
+    escaped_tokens = [re.escape(token) for token in special_tokens]
+    escaped_tokens.sort(key=len, reverse=True)
+    pattern = '|'.join(escaped_tokens)
+    parts = re.split(pattern, text)
+    return parts
+    
