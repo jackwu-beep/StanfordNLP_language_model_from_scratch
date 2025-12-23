@@ -9,6 +9,7 @@ class Tokenizer:
         self.merges = merges
         self.special_tokens = special_tokens if special_tokens else []
         
+        
     
     def from_files(cls, vocab_filepath, merges_filepath, special_tokens=None):
 
