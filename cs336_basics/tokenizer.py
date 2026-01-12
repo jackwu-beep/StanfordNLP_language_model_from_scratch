@@ -17,19 +17,37 @@ def word_to_bytes(word: str) -> list[bytes]:
 class Tokenizer(Protocol):
     def encode(self, string: str) -> list[int]:
         """
-        Encode a string into tokens, return a generator for memory efficiency.
+        Encode a string into tokens.
+
+        Args:
+            string (str): the orginal string.
+
+        Returns:
+            list[int]: tokens encoded from the original string.
         """
         ...
     
     def encode_iterable(self, iterable: Iterable[str]) -> Iterator[int]:
         """
-        Encode a string into tokens.
+        Encode a string into tokens, optimized for memory efficiency by yielding as a generator.
+
+        Args:
+            iterable (Iterable[str]): the orginal string.
+
+        Yields:
+            Iterator[int]: tokens encoded from the original string.
         """
         ...
     
-    def decode(self, indices: list[int]) -> str:
+    def decode(self, tokens: list[int]) -> str:
         """
-        Decode tokens back to string.
+        Decode a list of tokens to a string.
+
+        Args:
+            indices (list[int]): tokens to decode.
+
+        Returns:
+            str: decoded string.
         """
         ...
 
@@ -48,6 +66,17 @@ class BPETokenizer(Tokenizer):
         """
         Split a full text into segments separated by special tokens.
         Special tokens themselves are treated as segments too.
+
+        Example:
+            imagine <|endoftext|> as a special token (that we don't want to merge with other tokens),
+            running this method on "Héllò hôw <|endoftext|>are ü? 🙃<|endoftext|>" should give us
+            ["Héllò hôw ", "<|endoftext|>", "are ü? 🙃", "<|endoftext|>"]
+
+        Args:
+            string (str): the original text string.
+
+        Returns:
+            list[str]: the string segmented by split by special tokens.
         """
         if not self._special_tokens:
             return [string]
@@ -55,9 +84,15 @@ class BPETokenizer(Tokenizer):
         pattern = "|".join(re.escape(special_token) for special_token in self._special_tokens)
         return [c for c in re.compile( f"({pattern})").split(string) if c]  # remove empty strings
 
-    def _merge_bytes(self, string) -> list[bytes]:
+    def _merge_bytes(self, string: str) -> list[bytes]:
         """
-        TODO: optimize runtime -_-
+        Convert a text string into bytes that are recognized by BPE vocabulary.
+
+        Args:
+            string (_type_): the text string.
+
+        Returns:
+            list[bytes]: merged bytes.
         """
         merged_bytes_list: list[bytes] = []
         word_list: list[str] = split_text_to_words(string) # split the string into pre-tokenized words
