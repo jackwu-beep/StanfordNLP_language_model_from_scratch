@@ -1,5 +1,8 @@
+import os
 import regex as re
+from collections import defaultdict
 from typing import Iterable, Iterator, Protocol
+from tqdm.contrib.concurrent import process_map
 
 
 # reference: https://github.com/openai/tiktoken/pull/234/files
@@ -10,8 +13,66 @@ def split_text_to_words(text: str) -> list[str]:
     return GPT2_PRE_TOKENIZER_REGEX.findall(text)
 
 
+def split_text_to_words_iterator(text: str) -> Iterator[str]:
+    return GPT2_PRE_TOKENIZER_REGEX.finditer(text)
+
+
 def word_to_bytes(word: str) -> list[bytes]:
     return list(bytes([b]) for b in word.encode("utf-8"))
+
+
+def split_string_by_special_tokens(string: str, special_tokens: list[str]) -> list[str]:
+    """
+    Split a full text into segments separated by special tokens.
+    Special tokens themselves are treated as segments too.
+
+    Example:
+        imagine <|endoftext|> as a special token (that we don't want to merge with other tokens),
+        running this method on "Héllò hôw <|endoftext|>are ü? 🙃<|endoftext|>" should give us
+        ["Héllò hôw ", "<|endoftext|>", "are ü? 🙃", "<|endoftext|>"]
+
+    Args:
+        string (str): the original text string.
+
+    Returns:
+        list[str]: the string segmented by split by special tokens.
+    """
+    if not special_tokens:
+        return [string]
+
+    pattern = "|".join(re.escape(special_token) for special_token in special_tokens)
+    return [c for c in re.compile( f"({pattern})").split(string) if c]  # remove empty strings
+
+
+def get_word_counts_of_chunk(chunk: str) -> dict[str, int]:
+    word_counts: dict[str, int] = defaultdict(int)
+    word_matches = split_text_to_words_iterator(chunk)
+    for match in word_matches:
+        word = match.group(0)
+        word_counts[word] += 1
+    return word_counts
+
+
+def get_global_word_counts(word_counts_of_chunks: list[dict[str, int]]) -> dict[tuple, int]:
+    word_counts = defaultdict(int)
+    for workd_counts_of_chunk in word_counts_of_chunks:
+        for word, count in workd_counts_of_chunk.items():
+            word_counts[tuple(word_to_bytes(word))] += count
+    return word_counts
+
+
+def merge_token_strings(token_strings: list[str], merged_string: str) -> list[str]:
+    new_token_strings: list[str] = []
+    i = 0
+    while i < len(token_strings):
+        if i < len(token_strings) - 1 and token_strings[i] + token_strings[i+1] == merged_string:
+            new_token_strings.append(merged_string)
+            i += 2
+        else:
+            new_token_strings.append(token_strings[i])
+            i += 1
+    
+    return new_token_strings
 
 
 class Tokenizer(Protocol):
@@ -52,6 +113,90 @@ class Tokenizer(Protocol):
         ...
 
 
+def train_bpe(
+    input_path: str | os.PathLike,
+    vocab_size: int,
+    special_tokens: list[str]
+) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
+    """
+    Train BPE by generating vocabulary and bytes to merge from a text file.
+
+    Args:
+        input_path (str | os.PathLike): input file.
+        vocab_size (int): number of tokens in vocabulary
+        special_tokens (list[str]): tokens not considered for BPE training (i.e. <|endoftext|>)
+
+    Returns:
+        tuple[dict[int, bytes], list[tuple[bytes, bytes]]]: vocab and merges
+    """
+    # initialize vocab as all 256 bytes
+    vocab: dict[int, bytes] = {i: bytes([i]) for i in range(256)}
+
+    # include special tokens to vocab
+    for token in special_tokens:
+        vocab[len(vocab)] = token.encode()
+
+    # compute merges from strings read from input file
+    with open(input_path, 'r', encoding='utf-8') as file:
+        file_content = file.read()
+        chunks = split_string_by_special_tokens(file_content, special_tokens)
+        chunks = [chunk for chunk in chunks if chunk not in set(special_tokens)]
+
+        # count words
+        if len(chunks) < 4: word_counts_of_chunks = list(map(get_word_counts_of_chunk, chunks))
+        else: word_counts_of_chunks = process_map(get_word_counts_of_chunk, chunks)
+        word_counts: dict[tuple, int] = get_global_word_counts(word_counts_of_chunks)
+        
+        # get initial pair counds from pre-tokenized word counts
+        # word_to_word_segments: dict[str, list[bytes]] = {word: [bytes([c]) for c in list(word.encode())] for word in word_counts}
+        byte_pair_counts: dict[tuple[bytes, bytes], int] = defaultdict(int)
+        for word, word_count in word_counts.items():
+            for l_bytes, r_bytes in zip(word, word[1:]):
+                byte_pair_counts[(l_bytes, r_bytes)] += word_count
+        
+        # find merges until vocab size is reached
+        merges: list[tuple[bytes, bytes]] = []
+        merge_iterations: int = vocab_size - len(vocab)
+        for _ in range(merge_iterations):
+            # find the pair to merge, update merges and vocab accordingly
+            pair_to_merge: tuple[bytes, bytes] = max(byte_pair_counts.items(), key=lambda x: (x[1], x[0]))[0]
+            merged_pair = pair_to_merge[0] + pair_to_merge[1]
+            vocab[len(vocab)] = merged_pair
+            merges.append(pair_to_merge)
+
+            # update pair counts
+            new_word_counts: dict[tuple, int] = defaultdict(int)
+            for word_bytes, word_count in word_counts.items():
+                old_byte_pairs = list(zip(word_bytes, word_bytes[1:]))
+                if pair_to_merge in old_byte_pairs:
+                    # decrement byte pair counts from words that need merging
+                    for l_bytes, r_bytes in old_byte_pairs:
+                        byte_pair_counts[(l_bytes, r_bytes)] -= word_count
+                    
+                    # merge bytes
+                    i = 0
+                    merged_word_bytes: list[bytes] = []
+                    while i < len(word_bytes):
+                        if i + 1 < len(word_bytes) and word_bytes[i] + word_bytes[i+1] == merged_pair:
+                            merged_word_bytes.append(merged_pair)
+                            i += 2
+                        else:
+                            merged_word_bytes.append(word_bytes[i])
+                            i += 1
+
+                    # re-increment pair counts
+                    for l_bytes, r_bytes in zip(merged_word_bytes, merged_word_bytes[1:]):
+                        byte_pair_counts[(l_bytes, r_bytes)] += word_count
+                    
+                    # update word counts
+                    new_word_counts[tuple(merged_word_bytes)] = word_count
+                else:
+                    new_word_counts[word_bytes] = word_count
+            word_counts = new_word_counts
+        
+        return vocab, merges
+
+
 class BPETokenizer(Tokenizer):
     """
     Byte-Pair Encoding Tokenizer.
@@ -61,28 +206,6 @@ class BPETokenizer(Tokenizer):
         self._merges: set[tuple[bytes, bytes]] = set(merges)  # (byte_1, byte_2) to merge
         self._special_tokens: list[str] = sorted(special_tokens, key=len, reverse=True) if special_tokens else [] # special tokens from longest to shortest
         self._bytes_to_token: dict[bytes, int] = {byte: index for index, byte in vocab.items()} # bytes -> index reverse look-up
-    
-    def _split_string_by_special_tokens(self, string: str) -> list[str]:
-        """
-        Split a full text into segments separated by special tokens.
-        Special tokens themselves are treated as segments too.
-
-        Example:
-            imagine <|endoftext|> as a special token (that we don't want to merge with other tokens),
-            running this method on "Héllò hôw <|endoftext|>are ü? 🙃<|endoftext|>" should give us
-            ["Héllò hôw ", "<|endoftext|>", "are ü? 🙃", "<|endoftext|>"]
-
-        Args:
-            string (str): the original text string.
-
-        Returns:
-            list[str]: the string segmented by split by special tokens.
-        """
-        if not self._special_tokens:
-            return [string]
-
-        pattern = "|".join(re.escape(special_token) for special_token in self._special_tokens)
-        return [c for c in re.compile( f"({pattern})").split(string) if c]  # remove empty strings
 
     def _merge_bytes(self, string: str) -> list[bytes]:
         """
@@ -121,7 +244,7 @@ class BPETokenizer(Tokenizer):
         return merged_bytes_list
 
     def encode(self, string: str) -> list[int]:
-        segments: list[str] = self._split_string_by_special_tokens(string)
+        segments: list[str] = split_string_by_special_tokens(string, self._special_tokens)
         merged_tokens: list[int] = []
         for segment in segments:
             if segment in set(self._special_tokens):
