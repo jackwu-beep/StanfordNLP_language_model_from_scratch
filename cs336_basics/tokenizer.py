@@ -1,37 +1,12 @@
 import regex as re
 from multiprocessing import Pool
 
-# from pretokenization_example import find_chunk_boundaries
+from pretokenization_example import find_chunk_boundaries
 
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
 
-def bpe_tokenizer(input_path: str, vocab_size: int, special_tokens: list[str]):
-    
-    # max vocab size 10k = max merges = 9.7k
-    
-    # 0. init vocab size 256 (bytes)
-    # 1. pre-tokenization
-        # corpus --> chunks (with removed special token)
-            # get regex for special tokens to not include
-            # split on your special tokens (e.g. Doc 1 <end of text> Doc 2 --> Doc1 and Doc2 pretokenized separately)
-        # chunks --> pre-tokenization --> pre-tokenized chunks
-        # combine chunks into one corpus
-    # 2. merge
-        # while we can still merge
-            # find max_pair + add to vocab/merges
-            # for every chunk
-                # check for the max pair chunk (skip if not)
-                # if at max_pair chunk:
-                    # if token on left:
-                        # decrement count of left pair
-                        # increment count of new pair
-                    # if token on right:
-                        # decrement count of right pair
-                        # increment count of new pair
-                    # replace with new token (len(vocab) - 1)
-        
-    
-    
+def train_bpe(input_path: str, vocab_size: int, special_tokens: list[str], num_processes: int = 4):
+    """Trains a BPE tokenizer with parallelized pre-tokenization process, and byte pair merging to create a vocab of size vocab_size."""
     # 0. INITIALIZE BYTE VOCABULARY (token int : bytes)
     vocab: dict[int, bytes] = {}
     merges: list[tuple[bytes, bytes]] = []
@@ -48,33 +23,28 @@ def bpe_tokenizer(input_path: str, vocab_size: int, special_tokens: list[str]):
             
     # 1. PRE-TOKENIZATION
     with open(input_path, 'rb') as f:
-        # num_processes = 4
-        # boundaries = find_chunk_boundaries(f, num_processes, b"<|endoftext|>")
-        corpus_text = f.read().decode("utf-8")
+        boundaries = find_chunk_boundaries(f, num_processes, b"<|endoftext|>")
         
-        # split on special tokens
-        pattern = "|".join(re.escape(token) for token in special_tokens)
-        chunks = re.split(pattern, corpus_text)
-        
-        chunk_token_ids = []
-        # pre-tokenize each chunk with regex
-        for chunk in chunks:
-            if not chunk: continue
-            
-            pretok_chunk_iter = re.finditer(PAT, chunk)
-            for pretok in pretok_chunk_iter:
-                # text --> pretok --> bytes --> token ids
-                chunk_pretok = pretok.group() 
-                chunk_pretok_bytes = chunk_pretok.encode('utf-8')
-                chunk_token_ids.append(list(chunk_pretok_bytes))
+        chunks_data = []
+        for start, end in zip(boundaries[:-1], boundaries[1:]):
+            f.seek(start)
+            chunk_bytes = f.read(end - start)
+            chunk_text = chunk_bytes.decode("utf-8", errors="ignore")
+            chunks_data.append((chunk_text, special_tokens))
+    
+    # parallelize pre-tokenization process
+    with Pool(num_processes) as pool:
+        results = pool.map(pretokenize_chunk_worker, chunks_data)
+    
+    chunk_token_ids = []
+    for result in results:
+        chunk_token_ids.extend(result)
             
     # 2. MERGE
     # create byte pair dict over entire corpus
     token_pair_count: dict[tuple[int, int], int] = {} # token id pairs : count
-    merges: list[tuple[bytes, bytes]]
     max_merges = vocab_size - len(vocab)    
 
-        
     # get initial token pair dictionary
     for chunk in chunk_token_ids:
         for i in range(len(chunk) - 1):
@@ -84,10 +54,12 @@ def bpe_tokenizer(input_path: str, vocab_size: int, special_tokens: list[str]):
             else:
                 token_pair_count[token_pair] += 1
     
-
     while len(merges) < max_merges:
         # get lexographically largest pair
         max_pair = get_max_pair(token_pair_count)
+        
+        if max_pair is None:
+            break
         
         # add to vocab and merges
         new_token_id = len(vocab)
@@ -97,7 +69,8 @@ def bpe_tokenizer(input_path: str, vocab_size: int, special_tokens: list[str]):
         for chunk in chunk_token_ids:
             i = 0
 
-            while i < len(chunk) - 1:
+            chunk_len = len(chunk)
+            while i < chunk_len - 1:
                 token_pair = (chunk[i], chunk[i + 1])
                 
                 if token_pair != max_pair: 
@@ -118,7 +91,7 @@ def bpe_tokenizer(input_path: str, vocab_size: int, special_tokens: list[str]):
                     token_pair_count[new_left_pair] = token_pair_count.get(new_left_pair, 0) + 1
                     
                 # search right
-                if i + 2 < len(chunk):
+                if i + 2 < chunk_len:
                     old_right_pair = (chunk[i + 1], chunk[i + 2])
                     new_right_pair = (new_token_id, chunk[i + 2])
                     
@@ -161,6 +134,7 @@ def pretokenize_chunk_worker(args):
                 
         
 def get_max_pair(token_pair_count):
+    """Return the most common, lexigraphically largest token pair"""
     if not token_pair_count: 
         return None
     
@@ -179,5 +153,29 @@ def get_max_pair(token_pair_count):
     return max_pair
         
     
+if __name__ == "__main__":
+    import cProfile
+    import pstats
     
+    profiler = cProfile.Profile()
+    profiler.enable()
     
+    input_path = "/Users/johnkim/Developer/cs336/assignment1-basics/data/TinyStoriesV2-GPT4-valid.txt"
+    vocab_size = 10000
+    special_tokens = ["<|endoftext|>"]
+    num_processes = 4
+    
+    vocab, merges = train_bpe(input_path, vocab_size, special_tokens, num_processes)
+    
+       
+    profiler.disable()
+    
+    # Print results
+    stats = pstats.Stats(profiler)
+    stats.sort_stats('cumulative')
+    stats.print_stats(30)  # Top 30 functions
+    
+    # print(vocab)
+    # print(merges)
+    print(f"Trained tokenizer with {len(vocab)} tokens and {len(merges)} merges")
+

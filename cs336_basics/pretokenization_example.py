@@ -50,13 +50,35 @@ def find_chunk_boundaries(
 
 
 ## Usage
-with open(..., "rb") as f:
-    num_processes = 4
-    boundaries = find_chunk_boundaries(f, num_processes, b"<|endoftext|>")
+# with open(..., "rb") as f:
+#     num_processes = 4
+#     boundaries = find_chunk_boundaries(f, num_processes, b"<|endoftext|>")
 
-    # The following is a serial implementation, but you can parallelize this
-    # by sending each start/end pair to a set of processes.
-    for start, end in zip(boundaries[:-1], boundaries[1:]):
-        f.seek(start)
-        chunk = f.read(end - start).decode("utf-8", errors="ignore")
-        # Run pre-tokenization on your chunk and store the counts for each pre-token
+#     # The following is a serial implementation, but you can parallelize this
+#     # by sending each start/end pair to a set of processes.
+#     for start, end in zip(boundaries[:-1], boundaries[1:]):
+#         f.seek(start)
+#         chunk = f.read(end - start).decode("utf-8", errors="ignore")
+#         # Run pre-tokenization on your chunk and store the counts for each pre-token
+   
+#     # 1. PRE-TOKENIZATION
+#     with open(input_path, 'rb') as f:
+#         # num_processes = 4
+#         # boundaries = find_chunk_boundaries(f, num_processes, b"<|endoftext|>")
+#         corpus_text = f.read().decode("utf-8")
+        
+#         # split on special tokens
+#         pattern = "|".join(re.escape(token) for token in special_tokens)
+#         chunks = re.split(pattern, corpus_text)
+        
+#         chunk_token_ids = []
+#         # pre-tokenize each chunk with regex
+#         for chunk in chunks:
+#             if not chunk: continue
+            
+#             pretok_chunk_iter = re.finditer(PAT, chunk)
+#             for pretok in pretok_chunk_iter:
+#                 # text --> pretok --> bytes --> token ids
+#                 chunk_pretok = pretok.group() 
+#                 chunk_pretok_bytes = chunk_pretok.encode('utf-8')
+#                 chunk_token_ids.append(list(chunk_pretok_bytes))
