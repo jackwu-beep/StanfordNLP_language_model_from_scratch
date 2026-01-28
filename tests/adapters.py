@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Iterable
 from typing import IO, Any, BinaryIO
+from collections.abc import Iterable
+from jaxtyping import Float, Int
 
 import numpy.typing as npt
 import torch
-from jaxtyping import Bool, Float, Int
 from torch import Tensor
+import os
+print(os.getcwd())  # 获取当前工作目录
 
 
 def run_linear(
@@ -24,7 +26,7 @@ def run_linear(
         out_dim (int): The size of the output dimension
         weights (Float[Tensor, "d_out d_in"]): The linear weights to use
         in_features (Float[Tensor, "... d_in"]): The output tensor to apply the function to
-
+    
     Returns:
         Float[Tensor, "... d_out"]: The transformed output of your linear module.
     """
@@ -46,7 +48,7 @@ def run_embedding(
         d_model (int): The size of the embedding dimension
         weights (Float[Tensor, "vocab_size d_model"]): The embedding vectors to fetch from
         token_ids (Int[Tensor, "..."]): The set of token ids to fetch from the Embedding layer
-
+    
     Returns:
         Float[Tensor, "... d_model"]: Batch of embeddings returned by your Embedding layer.
     """
@@ -90,7 +92,7 @@ def run_scaled_dot_product_attention(
     Q: Float[Tensor, " ... queries d_k"],
     K: Float[Tensor, " ... keys d_k"],
     V: Float[Tensor, " ... values d_v"],
-    mask: Bool[Tensor, " ... queries keys"] | None = None,
+    mask: Float[Tensor, " ... queries keys"] | None = None,
 ) -> Float[Tensor, " ... queries d_v"]:
     """
     Given key (K), query (Q), and value (V) tensors, return
@@ -100,7 +102,7 @@ def run_scaled_dot_product_attention(
         Q (Float[Tensor, " ... queries d_k"]): Query tensor
         K (Float[Tensor, " ... keys d_k"]): Key tensor
         V (Float[Tensor, " ... values d_v"]): Values tensor
-        mask (Bool[Tensor, " ... queries keys"] | None): Mask tensor
+        mask (Float[Tensor, " ... queries keys"] | None): Mask tensor
     Returns:
         Float[Tensor, " ... queries d_v"]: Output of SDPA
     """
@@ -301,7 +303,7 @@ def run_transformer_lm(
             evenly divisible by `num_heads`.
         d_ff (int): Dimensionality of the feed-forward inner layer (section 3.3).
         rope_theta (float): The RoPE $\Theta$ parameter.
-        weights (dict[str, Tensor]):
+        weights (dict[str, Tensor]): 
             State dict of our reference implementation. {num_layers} refers to an
             integer between `0` and `num_layers - 1` (the layer index).
             The keys of this dictionary are:
@@ -434,9 +436,7 @@ def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, "
     raise NotImplementedError
 
 
-def run_cross_entropy(
-    inputs: Float[Tensor, " batch_size vocab_size"], targets: Int[Tensor, " batch_size"]
-) -> Float[Tensor, ""]:
+def run_cross_entropy(inputs: Float[Tensor, " batch_size vocab_size"], targets: Int[Tensor, " batch_size"]) -> Float[Tensor, ""]:
     """Given a tensor of inputs and targets, compute the average cross-entropy
     loss across examples.
 
@@ -464,7 +464,7 @@ def run_gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm:
     raise NotImplementedError
 
 
-def get_adamw_cls() -> Any:
+def get_adamw_cls() -> type[torch.optim.Optimizer]:
     """
     Returns a torch.optim.Optimizer that implements AdamW.
     """
@@ -522,7 +522,7 @@ def run_load_checkpoint(
     src: str | os.PathLike | BinaryIO | IO[bytes],
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
-) -> int:
+):
     """
     Given a serialized checkpoint (path or file-like object), restore the
     serialized state to the given model and optimizer.
@@ -538,6 +538,7 @@ def run_load_checkpoint(
     """
     raise NotImplementedError
 
+from tests.BPEtokenizer import BPETokenizer
 
 def get_tokenizer(
     vocab: dict[int, bytes],
@@ -559,9 +560,14 @@ def get_tokenizer(
     Returns:
         A BPE tokenizer that uses the provided vocab, merges, and special tokens.
     """
+    bpeTokenizer = BPETokenizer(vocab,merges,special_tokens)
+    return bpeTokenizer
     raise NotImplementedError
 
-
+import os
+from collections import defaultdict,Counter
+import regex as re
+import json
 def run_train_bpe(
     input_path: str | os.PathLike,
     vocab_size: int,
@@ -589,4 +595,151 @@ def run_train_bpe(
                 representing that <token1> was merged with <token2>.
                 Merges are ordered by order of creation.
     """
-    raise NotImplementedError
+    
+    # --- 初始化基础词表 ---
+    # 词表从 0 到 255 的字节开始，bpe 基础单位
+    vocab  = { i : bytes([i]) for i in range(256) }
+    
+    #计算x需要合并的个数
+    num_merges = vocab_size - len(special_tokens) - 256
+    # --- 读取并按照特殊词汇分隔 ---
+    with open(input_path,"r",encoding="utf - 8") as f:
+        text = f.read()
+    
+    """
+    special_tokens: 不参与频率统计，统计前需要“隔离”，防止bpe将其拆开或与文本混合
+    代码逻辑：
+        1.切割语料：词频统计前，利用正则语料库在特殊token出切开
+        2.独立统计：只对以特殊词汇为分隔的普通文本片段进行bpe统计
+        3.加入特殊词汇：训练后将特殊词汇加入词表
+      
+    """
+    if special_tokens:
+        special_regex = "|".join(re.escape(t) for t in special_tokens)
+        #["world<|endoftext|>hello"]
+        parts = re.split(f"({special_regex})",text)
+        #["world",'<|endoftext|>',"hello"]
+        train_segments = [ p for p in parts if p not in special_tokens ]
+        #["world","hello"]
+    else:
+        train_segments = [text]
+    
+    # --- 3.预分词(Pre-tokenization)并统计词频 ---
+    #gpt2的bpe预分词正则表达式：
+    #（1）不允许跨越类型合并：字母标点符号分开
+    #（2）保护空格：把单词前面的空格和单词连在一起
+    PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+    gpt2_pat = re.compile(PAT)
+    
+    raw_counts = Counter()
+    #train_segments = ["'u don\'t have to be scared of the loud dog, I\'ll protect you","he littles best friend."]
+    for segment in train_segments:
+        #对每个词段使用gpt预分词规则，找到所有单词
+        #segment = ["word eee eee"] 一句话或者一段话
+        words = gpt2_pat.findall(segment)
+        #words["word","eee","eee",...] 所有单词排在一个列表中
+        for word in words:
+            
+            raw_counts[tuple(bytes([h]) for h in word.encode("utf-8"))] += 1
+            #raw_counts = {(b'u',) = 1,(b' ', b'd', b'o', b'n') = 1,.....}
+            #tips:为什么是元组，counter的键不可变，list不能做键
+    # --- 3.1构建高效数据结构进行快速合并 ---
+    
+    word_list = []
+    count_list = []
+    
+    for word_tuple,freq in raw_counts.items():
+        word_list.append(list(word_tuple))
+        count_list.append(freq)
+    
+    #stats 是一个键不存在时默认值为 0 的字典（defaultdict(int)），
+    # 用于统计频次，例如统计某个相邻字节对出现的次数：stats[(b'a', b'b')] += 1。
+    #indices 用于记录索引集合，例如把某个字节对出现的“词编号和位置”收集起来（defaultdict(set)
+    # [(b'a', b'b')].add((word_id, pos))。
+    stats = defaultdict(int)
+    indices = defaultdict(set)
+    
+    for idx , word in enumerate(word_list):
+        freq = count_list[idx]
+        for i in range(len(word) - 1):
+            pair = (word[i],word[i+1])
+            stats[pair] += freq
+            indices[pair].add(idx)
+    
+    merges = [] # 用于存储生成的BPE合并规则，按顺序记录
+
+    # --- 4.迭代合并流程 ---
+    
+    #总执行 num_merges次
+    for _ in range(num_merges):
+        #没有了就不进行合并
+        if not stats:
+            break
+        
+        #4a. 寻找最佳pair,先按频率最大再按字典序最大
+        best_pair  = max(stats.items(),key = lambda x: (x[1],x[0]))[0]
+        
+        if stats[best_pair] <= 0:
+            break
+        
+        merges.append(best_pair)
+        new_token = best_pair[0] + best_pair[1]
+        
+        #4b. 获取需要更新的单词,复制一份indices，因为在后续遍历中需要更改indices
+        #indices[best_pair] 中是所有跟best_pair相关的索引，从word列表中找寻与之相关的单词并做修改
+        relevant_indices = list(indices[best_pair])
+        
+        
+        #4c. 遍历并更新所有受影响的单词、统计信息、倒排索引  
+        for idx in relevant_indices:
+            #4ca 获取单词
+            word = word_list[idx]
+            freq = count_list[idx]
+            i = 0
+            while i < len(word) - 1:
+                if word[i] == best_pair[0] and word[i+1] == best_pair[1]:    
+                    #4cb 找到word中bestpair、更新bestpair左右邻居
+                    if i > 0:  # 左邻居，左侧单词对需减少频率
+                        prev_pair = (word[i-1] , word[i])
+                        stats[prev_pair] -= freq
+                        
+                        if stats[prev_pair] == 0:
+                            #防止 都为 0时，仍会按照最多最大规则返回bestpair
+                            del stats[prev_pair]
+          
+                    if i < len(word) - 2:
+                        #右侧的为i+1,多一个则为i+2
+                        next_pair = (word[i+1] ,word[i+2])
+                        stats[next_pair] -= freq
+                        
+                        if stats[next_pair] == 0:
+                            #防止 都为 0时，仍会按照最多最大规则返回bestpair
+                            del stats[next_pair]
+                    #4cc 修改单词结构  h e l l o  --> bestpair = el --> h el lo
+                    word[i] = new_token
+                    del word[i + 1]        
+                    #4cd添加新产生的左右邻居
+                    if i > 0:
+                        new_prev = (word[i-1] , word[i])
+                        stats[new_prev] += freq
+                        indices[new_prev].add(idx)
+                    if i < len(word) - 1:
+                        new_next =( word[i] , word[i+1])
+                        stats[new_next] += freq
+                        indices[new_next].add(idx)         
+                else:
+                    i += 1 
+        #4d. 清理：移除已经合并额的bestpair
+        if best_pair in stats: del stats[best_pair]
+        if best_pair in indices: del indices[best_pair]
+        
+    # --- 5.构建最终的词表 ---
+    for pair in merges:
+        new_id = len(vocab)
+        vocab[new_id] = pair[0] + pair[1]
+    #添加特殊token
+    for s_tok in special_tokens:
+        s_bytes = s_tok.encode("utf-8")
+        vocab[len(vocab)] = s_bytes
+    
+    return vocab,merges
