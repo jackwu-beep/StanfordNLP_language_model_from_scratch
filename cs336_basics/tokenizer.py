@@ -148,7 +148,6 @@ def train_bpe(
         word_counts: dict[tuple, int] = get_global_word_counts(word_counts_of_chunks)
         
         # get initial pair counds from pre-tokenized word counts
-        # word_to_word_segments: dict[str, list[bytes]] = {word: [bytes([c]) for c in list(word.encode())] for word in word_counts}
         byte_pair_counts: dict[tuple[bytes, bytes], int] = defaultdict(int)
         for word, word_count in word_counts.items():
             for l_bytes, r_bytes in zip(word, word[1:]):
