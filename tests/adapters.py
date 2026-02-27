@@ -6,9 +6,31 @@ from typing import IO, Any, BinaryIO
 
 import numpy.typing as npt
 import torch
+from einops import einsum
 from jaxtyping import Bool, Float, Int
-from torch import Tensor
+from torch import Tensor, FloatTensor
 
+from tests.conftest import d_ff, d_model
+
+
+class Linear(torch.nn.Module):
+    in_features: int
+    out_features: int
+    device: torch.device
+    dtype: torch.dtype
+    weights: Float[Tensor, " d_out d_in"]
+    def __init__(self, in_features: int, out_features: int, device: torch.device | None = None,
+                 dtype: torch.dtype | None = None, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+
+        self.device = torch.device(device) if device is not None else None
+        self.in_features = in_features
+        self.out_features = out_features
+        self.dtype = dtype
+        self.weights = torch.nn.Parameter(torch.randn(in_features, out_features))
+
+    def forward(self, in_features: Float[Tensor, " ... d_in"]) -> torch.Tensor:
+        return einsum(in_features, self.weights, "... d_in, d_out d_in -> ... d_out")
 
 def run_linear(
     d_in: int,
@@ -28,9 +50,29 @@ def run_linear(
     Returns:
         Float[Tensor, "... d_out"]: The transformed output of your linear module.
     """
+    model = Linear(in_features=d_in, out_features=d_out, device=weights.device)
+    model.weights = torch.nn.Parameter(weights)
+    return model.forward(in_features)
 
-    raise NotImplementedError
+class Embedding(torch.nn.Module):
+    num_embeddings: int
+    embedding_dim: int
+    device: torch.device | None = None
+    dtype: torch.dtype | None = None
+    weights: Float[Tensor, " vocab_size d_model"]
 
+    def __init__(self, num_embeddings: int, embedding_dim: int, device: torch.device = None, dtype: torch.dtype = None) -> None:
+        super().__init__()
+        self.num_embeddings = num_embeddings
+        self.embedding_dim = embedding_dim
+        self.device = torch.device(device) if device is not None else None
+        self.dtype = dtype
+
+        self.weights = torch.rand(num_embeddings, embedding_dim)
+
+    def forward(self,token_ids: Int[Tensor, " ..."]) -> torch.Tensor:
+        indices = torch.LongTensor(token_ids)
+        return self.weights[indices]
 
 def run_embedding(
     vocab_size: int,
@@ -50,8 +92,63 @@ def run_embedding(
     Returns:
         Float[Tensor, "... d_model"]: Batch of embeddings returned by your Embedding layer.
     """
+    model = Embedding(num_embeddings=vocab_size, embedding_dim=d_model, device=weights.device, dtype=weights.dtype)
+    model.weights = torch.nn.Parameter(weights)
+    return model.forward(token_ids)
 
-    raise NotImplementedError
+
+class SwiGLU(torch.nn.Module):
+    glu: Glu
+    weights : Float[Tensor, "... d_model d_ff"]
+    d_ff : int
+    d_model : int
+
+    def __init__(self, d_ff, d_model, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.d_ff = d_ff
+        self.d_model = d_model
+        self.weights = torch.nn.Parameter(torch.rand(d_model, d_ff))
+        self.glu = Glu(d_ff=d_ff, d_model=d_model)
+
+    def forward(self, in_features: Float[Tensor, " ... d_model"]) -> torch.Tensor:
+        in_features = self.glu.forward(in_features)
+        return einsum(in_features, self.weights, "... d_in, d_out d_in -> ... d_out")
+
+
+class Silu(torch.nn.Module):
+    d_ff: int
+    d_model: int
+    weights : Float[Tensor, "d_ff d_model"]
+
+    def __init__(self, d_ff, d_model, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.d_ff = d_ff
+        self.d_model = d_model
+        self.weights = torch.nn.Parameter(torch.rand(d_ff, d_model))
+
+    def forward(self, in_features: Float[Tensor, " ... d_model"]) -> torch.Tensor:
+        x = einsum(in_features, self.weights, "... d_in, d_out d_in -> ... d_out")
+        return x * torch.sigmoid(x)
+
+
+class Glu(torch.nn.Module):
+    d_ff: int
+    d_model: int
+    silu: Silu
+    weights : Float[Tensor, "d_ff d_model"]
+
+    def __init__(self, d_ff, d_model, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.silu = Silu(d_ff=d_ff, d_model=d_model)
+        self.d_ff = d_ff
+        self.d_model = d_model
+        self.weights = torch.nn.Parameter(torch.rand(d_ff, d_model))
+
+    def forward(self, in_features: Float[Tensor, " ... d_model"]) -> torch.Tensor:
+        gate = self.silu.forward(in_features)
+        x = einsum(in_features, self.weights, "... d_in, d_out d_in -> ... d_out")
+
+        return gate * x
 
 
 def run_swiglu(
@@ -83,7 +180,14 @@ def run_swiglu(
     # swiglu.w1.weight.data = w1_weight
     # swiglu.w2.weight.data = w2_weight
     # swiglu.w3.weight.data = w3_weight
-    raise NotImplementedError
+
+
+    swiglu =  SwiGLU(d_ff=d_ff, d_model=d_model)
+    swiglu.weights = torch.nn.Parameter(w2_weight)
+    swiglu.glu.silu.weights = torch.nn.Parameter(w1_weight)
+    swiglu.glu.weights = torch.nn.Parameter(w3_weight)
+
+    return swiglu.forward(in_features)
 
 
 def run_scaled_dot_product_attention(
@@ -357,6 +461,29 @@ def run_transformer_lm(
     """
     raise NotImplementedError
 
+class Rmsnorm(torch.nn.Module):
+    d_model: int
+    eps: float
+    device: torch.device | None = None
+    dtype: torch.dtype | None = None
+    weights: Float[Tensor, " d_model"]
+
+    def __init__(self, d_model: int, eps: float = 1e-5, device=None, dtype=None) -> None:
+        super().__init__()
+        self.d_model = d_model
+        self.eps = eps
+        self.device = torch.device(device) if device is not None else None
+        self.dtype = dtype
+
+        self.weights = torch.rand(d_model)
+
+    def forward(self,in_features: Float[Tensor, " ... d_model"]) -> Float[Tensor,"... d_model"]:
+        in_dtype = self.dtype
+        x = self.weights.to(torch.float32)
+
+        rms = (einsum(in_features ** 2, "... d_model -> ...") / self.d_model + self.eps) ** 0.5
+        result = einsum(in_features / rms.unsqueeze(-1), x, "... d_model, d_model -> ... d_model")
+        return result.to(in_dtype)
 
 def run_rmsnorm(
     d_model: int,
@@ -378,7 +505,10 @@ def run_rmsnorm(
         Float[Tensor,"... d_model"]: Tensor of with the same shape as `in_features` with the output of running
         RMSNorm of the `in_features`.
     """
-    raise NotImplementedError
+
+    model = Rmsnorm(d_model, eps)
+    model.weights = torch.nn.Parameter(weights)
+    return model.forward(in_features)
 
 
 def run_silu(in_features: Float[Tensor, " ..."]) -> Float[Tensor, " ..."]:
